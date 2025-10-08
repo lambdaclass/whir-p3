@@ -1,9 +1,10 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use p3_challenger::DuplexChallenger;
 use p3_field::extension::BinomialExtensionField;
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::hint::black_box;
+use std::time::Duration;
 use whir::{
     fiat_shamir::{domain_separator::DomainSeparator, prover::ProverState},
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
@@ -50,7 +51,8 @@ fn generate_statement(
 
 fn bench_sumcheck_prover_svo(c: &mut Criterion) {
     let mut group = c.benchmark_group("SumcheckProver");
-    group.sample_size(30);
+    group.sample_size(200);
+    group.measurement_time(Duration::from_secs(5));
 
     for &num_vars in &[16, 18, 20] {
         let poly = generate_poly(num_vars);
@@ -60,19 +62,25 @@ fn bench_sumcheck_prover_svo(c: &mut Criterion) {
             BenchmarkId::new("Classic", num_vars),
             &num_vars,
             |b, &_num_vars| {
-                b.iter(|| {
-                    let mut prover = setup_prover();
-                    let combination_randomness: EF = prover.sample();
-                    let result = SumcheckSingle::from_base_evals(
-                        &poly,
-                        &statement,
-                        combination_randomness,
-                        &mut prover,
-                        FOLDING_FACTOR,
-                        POW_BITS,
-                    );
-                    black_box(result);
-                });
+                b.iter_batched(
+                    || {
+                        let mut prover = setup_prover();
+                        let combination_randomness: EF = prover.sample();
+                        (prover, combination_randomness)
+                    },
+                    |(mut prover, combination_randomness)| {
+                        let result = SumcheckSingle::from_base_evals(
+                            &poly,
+                            &statement,
+                            combination_randomness,
+                            &mut prover,
+                            FOLDING_FACTOR,
+                            POW_BITS,
+                        );
+                        black_box(result);
+                    },
+                    BatchSize::SmallInput,
+                );
             },
         );
 
@@ -80,19 +88,25 @@ fn bench_sumcheck_prover_svo(c: &mut Criterion) {
             BenchmarkId::new("SVO", num_vars),
             &num_vars,
             |b, &_num_vars| {
-                b.iter(|| {
-                    let mut prover = setup_prover();
-                    let combination_randomness: EF = prover.sample();
-                    let result = SumcheckSingle::from_base_evals_svo(
-                        &poly,
-                        &statement,
-                        combination_randomness,
-                        &mut prover,
-                        FOLDING_FACTOR,
-                        POW_BITS,
-                    );
-                    black_box(result);
-                });
+                b.iter_batched(
+                    || {
+                        let mut prover = setup_prover();
+                        let combination_randomness: EF = prover.sample();
+                        (prover, combination_randomness)
+                    },
+                    |(mut prover, combination_randomness)| {
+                        let result = SumcheckSingle::from_base_evals_svo(
+                            &poly,
+                            &statement,
+                            combination_randomness,
+                            &mut prover,
+                            FOLDING_FACTOR,
+                            POW_BITS,
+                        );
+                        black_box(result);
+                    },
+                    BatchSize::SmallInput,
+                );
             },
         );
     }

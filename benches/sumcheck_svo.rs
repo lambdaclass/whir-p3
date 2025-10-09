@@ -4,6 +4,7 @@ use p3_field::extension::BinomialExtensionField;
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::hint::black_box;
+use std::time::Duration;
 use whir::{
     fiat_shamir::{domain_separator::DomainSeparator, prover::ProverState},
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
@@ -11,7 +12,6 @@ use whir::{
     whir::statement::{Statement, point::ConstraintPoint},
 };
 use whir_p3 as whir;
-
 type F = KoalaBear;
 type EF = BinomialExtensionField<F, 8>;
 type Poseidon16 = Poseidon2KoalaBear<16>;
@@ -50,8 +50,8 @@ fn generate_statement(
 
 fn bench_sumcheck_prover_svo(c: &mut Criterion) {
     let mut group = c.benchmark_group("SumcheckProver");
-    group.sample_size(30);
-
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(10));
     for &num_vars in &[16, 18, 20] {
         let poly = generate_poly(num_vars);
         let statement = generate_statement(num_vars, &poly, NUM_CONSTRAINTS);

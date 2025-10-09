@@ -58,7 +58,6 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
 
             // This inner part remains the same, but operates on local variables.
             let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
-            let mut p_evals_buffer = [F::ZERO; 27];
 
             for x_in in 0..1 << half_l {
                 let start_index = (x_in << x_out_num_variables) | x_out;
@@ -73,10 +72,10 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
                     .try_into()
                     .unwrap();
 
-                compute_p_beta(&current_evals_array, &mut p_evals_buffer);
+                let p_evals = compute_p_beta(&current_evals_array);
                 let e_in_value = e_in[x_in];
 
-                for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(&p_evals_buffer) {
+                for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(&p_evals) {
                     *accumulator += e_in_value * p_eval;
                 }
             }

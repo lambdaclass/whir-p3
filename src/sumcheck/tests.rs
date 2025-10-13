@@ -8,7 +8,7 @@ use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use proptest::prelude::*;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-use super::{sumcheck_single::SumcheckSingle, sumcheck_small_value_eq::eval_eq_in_point};
+use super::sumcheck_single::SumcheckSingle;
 use crate::{
     constant::K_SKIP_SUMCHECK,
     fiat_shamir::{

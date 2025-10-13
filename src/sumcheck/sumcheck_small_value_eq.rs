@@ -1,20 +1,20 @@
-use crate::{
-    fiat_shamir::prover::ProverState,
-    poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
-    sumcheck::small_value_utils::{
-        Accumulators, compute_p_beta, idx4, idx4_v2, to_base_three_coeff,
-    },
-    whir::verifier::sumcheck,
-};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_field::{ExtensionField, Field};
-
-use super::sumcheck_polynomial::SumcheckPolynomial;
+use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_maybe_rayon::prelude::*;
 use p3_multilinear_util::eq::eval_eq;
 
+use crate::{
+    fiat_shamir::prover::ProverState,
+    poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
+    sumcheck::{
+        small_value_utils::{Accumulators, compute_p_beta},
+        sumcheck_single::compute_sumcheck_polynomial,
+    },
+};
+
 // WE ASSUME THE NUMBER OF ROUNDS WE ARE DOING WITH SMALL VALUES IS 3
-const NUM_OF_ROUNDS: usize = 3;
+pub(crate) const NUM_SVO_ROUNDS: usize = 3;
+const NUM_OF_ROUNDS: usize = NUM_SVO_ROUNDS;
 
 fn precompute_e_in<F: Field>(w: &MultilinearPoint<F>) -> Vec<F> {
     let half_l = w.num_variables() / 2;
@@ -45,7 +45,7 @@ fn transpose_poly_for_svo<F: Field>(
     half_l: usize,
 ) -> Vec<F> {
     let num_x_in = 1 << half_l;
-    let num_x_out = 1 << x_out_num_vars;
+    let _num_x_out = 1 << x_out_num_vars;
     let step_size = 1 << (num_variables - NUM_OF_ROUNDS);
     let block_size = 8;
 
@@ -435,6 +435,135 @@ where
         + round_poly_evals[0];
 
     (r_1, r_2, r_3)
+}
+
+/// HELPER FUNCTION: Folds evaluations with a set of challenges.
+///
+/// This function takes a list of evaluations and "folds" or "compresses" them according
+/// to the provided challenges `r_1, ..., r_{k}`. The result is a new evaluation table
+/// representing p(r_1, ..., r_{k}, x'). This is the core mechanic for the transition.
+///
+fn fold_evals_with_challenges<Base, Target>(
+    evals: &EvaluationsList<Base>,
+    challenges: &[Target],
+) -> EvaluationsList<Target>
+where
+    Base: Field,
+    Target: Field + core::ops::Mul<Base, Output = Target>,
+{
+    let num_challenges = challenges.len();
+    let remaining_vars = evals.num_variables() - num_challenges;
+    let num_remaining_evals = 1 << remaining_vars;
+
+    let eq_table: Vec<Target> = {
+        let mut table = vec![Target::ONE; 1 << num_challenges];
+        for (k, r_k) in challenges.iter().enumerate() {
+            let bit_index = num_challenges - 1 - k;
+            for (j, val) in table.iter_mut().enumerate() {
+                if (j >> bit_index) & 1 == 1 {
+                    *val *= *r_k;
+                } else {
+                    *val *= Target::ONE - *r_k;
+                }
+            }
+        }
+        table
+    };
+
+    let folded_evals_flat: Vec<Target> = (0..num_remaining_evals)
+        .into_par_iter()
+        .map(|i| {
+            // Use the multilinear extension formula: p(r, x') = Σ_{b} eq(r, b) * p(b, x')
+            eq_table
+                .iter()
+                .enumerate()
+                .fold(Target::ZERO, |acc, (j, &eq_val)| {
+                    let original_eval_index = (j * num_remaining_evals) + i;
+                    let p_b_x = evals.as_slice()[original_eval_index];
+                    acc + eq_val * p_b_x
+                })
+        })
+        .collect();
+
+    EvaluationsList::new(folded_evals_flat)
+}
+
+// PHASE 2 - TRANSITION ROUND (ℓ₀ + 1): Explicit implementation of Algorithm 2's logic.
+///
+/// Purpose: Executes a single round to transition from the SVO phase to the final phase.
+///
+pub(crate) fn run_transition_round_algo2<Challenger, F, EF>(
+    prover_state: &mut ProverState<F, EF, Challenger>,
+    evals_base: &EvaluationsList<F>,
+    weights_base: &EvaluationsList<EF>,
+    svo_challenges: &[EF],
+    sum: &mut EF,
+    pow_bits: usize,
+) -> (
+    EF,                  // New challenge r_{ℓ₀+1}
+    EvaluationsList<EF>, // Folded evaluations for the next phase
+    EvaluationsList<EF>, // Folded weights for the next phase
+)
+where
+    F: TwoAdicField + Ord,
+    EF: TwoAdicField + ExtensionField<F>,
+    Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+{
+    // Step 1: Materialize the folded evaluation tables from scratch, as per Algorithm 2.
+    let mut folded_evals = fold_evals_with_challenges(evals_base, svo_challenges);
+    let mut folded_weights = fold_evals_with_challenges(weights_base, svo_challenges);
+
+    // Step 2: Run a standard sumcheck round on these newly computed tables.
+    let sumcheck_poly = compute_sumcheck_polynomial(&folded_evals, &folded_weights, *sum);
+    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
+    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
+
+    prover_state.pow_grinding(pow_bits);
+    let r_transition: EF = prover_state.sample();
+
+    folded_evals.compress(r_transition);
+    folded_weights.compress(r_transition);
+
+    // Update the sum and return everything needed for the next phase.
+    *sum = sumcheck_poly.evaluate_on_standard_domain(&MultilinearPoint::new(vec![r_transition]));
+
+    (r_transition, folded_evals, folded_weights)
+}
+
+/// PHASE 3 - FINAL ROUNDS (ℓ₀ + 2 to ℓ): Explicit implementation of Algorithm 5's logic.
+///
+/// Purpose: Executes a standard sumcheck round on tables that have already been folded.
+///
+pub(crate) fn run_final_round_algo5<Challenger, F, EF>(
+    prover_state: &mut ProverState<F, EF, Challenger>,
+    folded_evals: &mut EvaluationsList<EF>,
+    folded_weights: &mut EvaluationsList<EF>,
+    sum: &mut EF,
+    pow_bits: usize,
+) -> EF
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+{
+    // Initialization part comes as parameter for the function
+
+    //
+
+    // This is the logic for the standard linear-time sumcheck prover.
+    let sumcheck_poly = compute_sumcheck_polynomial(folded_evals, folded_weights, *sum);
+    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
+    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
+
+    prover_state.pow_grinding(pow_bits);
+    let r: EF = prover_state.sample();
+
+    // This is the key step corresponding to Step 5 of Algorithm 5: update arrays.
+    folded_evals.compress(r);
+    folded_weights.compress(r);
+
+    *sum = sumcheck_poly.evaluate_on_standard_domain(&MultilinearPoint::new(vec![r]));
+    r
 }
 
 #[cfg(test)]

@@ -1,69 +1,17 @@
-use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_field::{ExtensionField, Field, TwoAdicField};
-use p3_interpolation::interpolate_subgroup;
-use p3_matrix::dense::RowMajorMatrix;
-use p3_maybe_rayon::prelude::*;
-use tracing::instrument;
-
-use super::sumcheck_polynomial::SumcheckPolynomial;
 use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::{
-        sumcheck_polynomial,
-        sumcheck_single::{SumcheckSingle, compute_sumcheck_polynomial},
-        sumcheck_single_skip::compute_skipping_sumcheck_polynomial,
-        sumcheck_small_value_eq::small_value_sumcheck_three_rounds_eq,
-        utils::sumcheck_quadratic,
+        sumcheck_single::SumcheckSingle,
+        sumcheck_small_value_eq::{
+            NUM_SVO_ROUNDS, run_final_round_algo5, run_transition_round_algo2,
+            small_value_sumcheck_three_rounds_eq,
+        },
     },
     whir::statement::Statement,
 };
-
-/// This function is the same as in sumcheck_singl.rs. We copy it here because it was private.
-///  
-/// Executes a standard, intermediate round of the sumcheck protocol.
-///
-/// This function executes a standard, intermediate round of the sumcheck protocol. Unlike the initial round,
-/// it operates entirely within the extension field `EF`. It computes the sumcheck polynomial from the
-/// current evaluations and weights, adds it to the transcript, gets a new challenge from the verifier,
-/// and then compresses both the polynomial and weight evaluations in-place.
-///
-/// ## Arguments
-/// * `prover_state` - A mutable reference to the `ProverState`, managing the Fiat-Shamir transcript.
-/// * `evals` - A mutable reference to the polynomial's evaluations in `EF`, which will be compressed.
-/// * `weights` - A mutable reference to the weight evaluations in `EF`, which will also be compressed.
-/// * `sum` - A mutable reference to the claimed sum, updated after folding.
-/// * `pow_bits` - The number of proof-of-work bits for grinding.
-///
-/// ## Returns
-/// The verifier's challenge `r` as an `EF` element.
-fn round<Challenger, F: Field, EF: ExtensionField<F>>(
-    prover_state: &mut ProverState<F, EF, Challenger>,
-    evals: &mut EvaluationsList<EF>,
-    weights: &mut EvaluationsList<EF>,
-    sum: &mut EF,
-    pow_bits: usize,
-) -> EF
-where
-    Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
-{
-    // Compute the quadratic sumcheck polynomial for the current variable.
-    let sumcheck_poly = compute_sumcheck_polynomial(evals, weights, *sum);
-    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
-    prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
-
-    prover_state.pow_grinding(pow_bits);
-
-    // Sample verifier challenge.
-    let r: EF = prover_state.sample();
-
-    // Compress polynomials and update the sum.
-    join(|| evals.compress(r), || weights.compress(r));
-
-    *sum = sumcheck_poly.evaluate_on_standard_domain(&MultilinearPoint::new(vec![r]));
-
-    r
-}
+use p3_challenger::{FieldChallenger, GrindingChallenger};
+use p3_field::{ExtensionField, Field, TwoAdicField};
 
 impl<F, EF> SumcheckSingle<F, EF>
 where
@@ -84,37 +32,52 @@ where
         Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
         assert_ne!(folding_factor, 0);
-        let mut res = Vec::with_capacity(folding_factor);
+        // Add this assert?
+        // assert!(folding_factor > NUM_SVO_ROUNDS);
 
-        let (mut weights, mut sum) = statement.combine::<F>(combination_randomness);
+        let mut challenges = Vec::with_capacity(folding_factor);
+
+        let (weights_init, mut sum) = statement.combine::<F>(combination_randomness);
 
         // We assume the the statemas has only one constraint.
         let w = statement.constraints[0].point.0.clone();
 
         let (r_1, r_2, r_3) =
             small_value_sumcheck_three_rounds_eq(prover_state, evals, &w, &mut sum);
-        res.push(r_1);
-        res.push(r_2);
-        res.push(r_3);
+        challenges.push(r_1);
+        challenges.push(r_2);
+        challenges.push(r_3);
 
-        let mut evals = join(|| weights.compress_svo(r_1), || evals.compress_ext_svo(r_1)).1;
+        // --- PHASE 2: The Transition Round (Round ℓ₀ + 1) ---
+        // This follows the second step of Algorithm 6: "Follow Algorithm 2".
+        // We call our explicit function that implements this logic.
+        let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
+            prover_state,
+            evals,
+            &weights_init,
+            &challenges,
+            &mut sum,
+            pow_bits,
+        );
+        challenges.push(r_transition);
 
-        // Compress polynomials and update the sum.
-        join(|| evals.compress_svo(r_2), || weights.compress_svo(r_2));
+        // --- PHASE 3: Standard Linear-Time Final Rounds (Rounds ℓ₀ + 2 to ℓ) ---
+        // This follows the final step of Algorithm 6: "Follow Algorithm 5".
+        // We now loop over our explicit function for Algorithm 5's logic.
+        for _ in (NUM_SVO_ROUNDS + 1)..folding_factor {
+            let r_final = run_final_round_algo5(
+                prover_state,
+                &mut folded_evals,
+                &mut folded_weights,
+                &mut sum,
+                pow_bits,
+            );
+            challenges.push(r_final);
+        }
 
-        // Compress polynomials and update the sum.
-        join(|| evals.compress_svo(r_3), || weights.compress_svo(r_3));
+        challenges[NUM_SVO_ROUNDS..].reverse();
 
-        let mut res_remaining: Vec<EF> = (3..folding_factor)
-            .map(|_| round(prover_state, &mut evals, &mut weights, &mut sum, pow_bits))
-            .collect();
-
-        res_remaining.reverse();
-
-        res.extend(res_remaining);
-
-        let sumcheck = Self::new(evals, weights, sum);
-
-        (sumcheck, MultilinearPoint::new(res))
-    }   
+        let sumcheck_instance = SumcheckSingle::<F, EF>::new(folded_evals, folded_weights, sum);
+        (sumcheck_instance, MultilinearPoint::new(challenges))
+    }
 }

@@ -1,15 +1,11 @@
 use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
-    sumcheck::small_value_utils::{
-        Accumulators, compute_p_beta, idx4, idx4_v2, to_base_three_coeff,
-    },
-    whir::verifier::sumcheck,
+    sumcheck::small_value_utils::{Accumulators, compute_p_beta, idx4_v2, to_base_three_coeff},
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
 
-use super::sumcheck_polynomial::SumcheckPolynomial;
 use p3_multilinear_util::eq::eval_eq;
 
 // WE ASSUME THE NUMBER OF ROUNDS WE ARE DOING WITH SMALL VALUES IS 3
@@ -133,7 +129,7 @@ pub fn compute_linear_function<F: Field>(w: &[F], r: &[F]) -> [F; 2] {
 
 fn get_evals_from_l_and_t<F: Field>(l: &[F; 2], t: &[F]) -> [F; 2] {
     [
-        t[0] * l[0],          // s(0)
+        t[0] * l[0],                   // s(0)
         (t[1] - t[0]) * (l[1] - l[0]), //s(inf) -> l(inf) = l(1) - l(0)
     ]
 }
@@ -176,8 +172,10 @@ where
     // 4. Receive the challenge r_1 from the verifier.
     let r_1: EF = prover_state.sample();
 
-    let eval_1 = *sum - round_poly_evals[0] ;
-    *sum = round_poly_evals[1] * r_1.square() + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_1 + round_poly_evals[0];
+    let eval_1 = *sum - round_poly_evals[0];
+    *sum = round_poly_evals[1] * r_1.square()
+        + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_1
+        + round_poly_evals[0];
 
     // 5. Compte R_2 = [L_0(r_1), L_1(r_1), L_inf(r_1)]
     // L_0 (x) = 1 - x
@@ -231,7 +229,9 @@ where
     ];
 
     let eval_1 = *sum - round_poly_evals[0];
-    *sum = round_poly_evals[1] * r_2.square() + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_2 + round_poly_evals[0];
+    *sum = round_poly_evals[1] * r_2.square()
+        + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_2
+        + round_poly_evals[0];
 
     // Round 3
 
@@ -265,12 +265,17 @@ where
     // TODO: En realidad no hace falta mandar S_3(1) porque se dedecue usando S_3(0).
     prover_state.add_extension_scalars(&round_poly_evals);
 
-
     let r_3: EF = prover_state.sample();
 
     let eval_1 = *sum - round_poly_evals[0];
-    *sum = round_poly_evals[1] * r_3.square() + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_3 + round_poly_evals[0];
+    *sum = round_poly_evals[1] * r_3.square()
+        + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_3
+        + round_poly_evals[0];
 
+    // Round l_0 + 1. Algorithm 5.
+    let eq_r = eval_eq_in_hypercube(&vec![r_1, r_2, r_3]);
+
+    println!("Eq_r: {:?}", eq_r);
     (r_1, r_2, r_3)
 }
 
@@ -1006,6 +1011,7 @@ mod tests {
 
         let r_1 = get_random_f();
         let r_2 = get_random_f();
+        let r_3 = get_random_f();
 
         // -------------  EQ  -------------
         let e_in = precompute_e_in(&w);
@@ -1055,10 +1061,8 @@ mod tests {
         // We compute l_2(0) and l_2(inf)
         let linear_2_evals = compute_linear_function(&w.0[..2], &[r_1]);
 
-
         // We compute S_2(0) and S_2(inf)
         let round_poly_evals = get_evals_from_l_and_t(&linear_2_evals, &t_2_evals);
-
 
         println!("ROUND 2 EQ: {:?}", round_poly_evals);
 
@@ -1108,6 +1112,55 @@ mod tests {
         let round_poly_evals = get_evals_from_l_and_t(&linear_3_evals, &t_3_evals);
 
         println!("ROUND 3 EQ: {:?}", round_poly_evals);
+
+        // --------------- ROUND 4 ---------------
+        //
+        let l = poly.num_variables();
+        let eq = eval_eq_in_hypercube(&w.0);
+        let eq_r = eval_eq_in_hypercube(&vec![r_1, r_2, r_3]);
+
+        let mut folded_poly: Vec<F> = Vec::with_capacity(1 << l - 4);
+
+        let mut compute_eval = |start_offset: usize| {
+            (0..1 << l - 4)
+                .map(|x| {
+                    let start = x + start_offset;
+                    let step = 1 << l - 3;
+
+                    let eq_sum: F = eq
+                        .iter()
+                        .skip(start)
+                        .step_by(step)
+                        .zip(eq_r.iter())
+                        .map(|(a, b)| *a * *b)
+                        .take(8)
+                        .sum();
+
+                    let p_sum: F = poly
+                        .iter()
+                        .skip(start)
+                        .step_by(step)
+                        .zip(eq_r.iter())
+                        .map(|(a, b)| *a * *b)
+                        .take(8)
+                        .sum();
+
+                    folded_poly.push(p_sum);
+
+                    eq_sum * p_sum
+                })
+                .sum()
+        };
+
+        let eval_zero: F = compute_eval(0);
+        let eval_one: F = compute_eval(1 << l - 4);
+
+        println!("Folded_poly: {:?}", folded_poly);
+
+        println!("Eval zero: {}", eval_zero);
+        println!("Eval one: {}", eval_one);
+
+        println!("Sum: {}", eval_zero + eval_one);
 
         // -------------  P * Q  -------------
         let poly_2 = EvaluationsList::new(eval_eq_in_hypercube(&w.0));
@@ -1183,5 +1236,11 @@ mod tests {
 
         assert_eq!(round_poly_evals_3[0] + round_poly_evals_3[1], expected_eval);
         println!("ROUND 3 PQ: {:?}", round_poly_evals_3);
+
+        let expected_eval = round_poly_evals_3[2] * r_3.square()
+            + (round_poly_evals_3[1] - round_poly_evals_3[0] - round_poly_evals_3[2]) * r_3
+            + round_poly_evals_3[0];
+
+        println!("Expected Evaluation: {}", expected_eval);
     }
 }

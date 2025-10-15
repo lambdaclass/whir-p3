@@ -148,14 +148,14 @@ where
     EF: ExtensionField<F> + TwoAdicField,
     Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
 {
-    println!("Verifier");
+    //println!("Verifier");
     // Preallocate vector to hold the randomness values
     let mut randomness = Vec::with_capacity(rounds);
 
     //let mut randomness_final: Vec<EF> = Vec::new();
 
     for i in 0..rounds {
-        println!("Round {}", i);
+        //println!("Round {}", i);
         // Extract the first and third evaluations of the sumcheck polynomial
         // and derive the second evaluation from the latest sum
         let c0 = verifier_state.next_extension_scalar()?;
@@ -164,9 +164,9 @@ where
 
         let c2 = verifier_state.next_extension_scalar()?;
 
-        println!("S(0): {}", c0);
-        println!("S(inf): {}", c2);
-        println!("S(1): {}", c1);
+        // println!("S(0): {}", c0);
+        // println!("S(inf): {}", c2);
+        // println!("S(1): {}", c1);
 
         // Optional PoW interaction (grinding resistance)
         verifier_state.check_pow_grinding(pow_bits)?;

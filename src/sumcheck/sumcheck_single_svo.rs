@@ -13,7 +13,9 @@ use crate::{
         sumcheck_polynomial,
         sumcheck_single::{SumcheckSingle, compute_sumcheck_polynomial},
         sumcheck_single_skip::compute_skipping_sumcheck_polynomial,
-        sumcheck_small_value_eq::{algorithm_5, small_value_sumcheck_three_rounds_eq},
+        sumcheck_small_value_eq::{
+            algorithm_5, small_value_sumcheck_three_rounds_eq, transition_round_algorithm2,
+        },
         utils::sumcheck_quadratic,
     },
     whir::statement::Statement,
@@ -147,20 +149,26 @@ where
         res.push(r_2);
         res.push(r_3);
 
-        let mut evals = join(|| weights.compress_svo(r_1), || evals.compress_ext_svo(r_1)).1;
+        // We don´t need this because we are using the transition round algorithm
 
-        // Compress polynomials and update the sum.
-        join(|| evals.compress_svo(r_2), || weights.compress_svo(r_2));
+        // let mut evals = join(|| weights.compress_svo(r_1), || evals.compress_ext_svo(r_1)).1;
 
-        // Compress polynomials and update the sum.
-        join(|| evals.compress_svo(r_3), || weights.compress_svo(r_3));
+        // // Compress polynomials sand update the sum.
+        // join(|| evals.compress_svo(r_2), || weights.compress_svo(r_2));
 
-        algorithm_5(prover_state, &mut evals, &w, &mut res, &mut sum);
+        // // Compress polynomials and update the sum.
+        // join(|| evals.compress_svo(r_3), || weights.compress_svo(r_3));
+
+        let (r_4, mut folded_evals) =
+            transition_round_algorithm2(prover_state, evals, &w, &mut res, &mut sum);
+        res.push(r_4);
+
+        algorithm_5(prover_state, &mut folded_evals, &w, &mut res, &mut sum);
 
         // Final weight: eq(w, r).
         weights = EvaluationsList::new(vec![w.eq_poly(&MultilinearPoint::new(res.clone()))]);
 
-        let sumcheck = Self::new(evals, weights, sum);
+        let sumcheck = Self::new(folded_evals, weights, sum);
 
         (sumcheck, MultilinearPoint::new(res))
     }

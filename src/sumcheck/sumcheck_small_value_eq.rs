@@ -8,7 +8,7 @@ use crate::{
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
-use rayon::iter::ParallelIterator;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use super::sumcheck_polynomial::SumcheckPolynomial;
 use p3_maybe_rayon::prelude::IntoParallelIterator;
@@ -43,62 +43,77 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     let l = poly.num_variables();
     let half_l = l / 2;
 
-    let mut accumulators = Accumulators::<EF>::new_empty();
-
     let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
-    for x_out in 0..1 << (x_out_num_variables) {
-        let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
+    // 1. The `for` loop is converted to a parallel iterator.
+    let accumulators = (0..1 << x_out_num_variables)
+        .into_par_iter()
+        .map(|x_out| {
+            // --- START: Logic for each thread ---
+            // Each thread computes its own local accumulators.
+            let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
+            let mut local_accumulators = Accumulators::<EF>::new_empty();
 
-        for x_in in 0..1 << half_l {
-            // We collect the evaluations of p(X_0, X_1, X_2, x_in, x_out) where
-            // x_in and x_out are fixed and X_0, X_1, X_2 are variables.
-            let start_index = (x_in << x_out_num_variables) | x_out;
-            let step_size = 1 << (l - NUM_OF_ROUNDS);
+            for x_in in 0..1 << half_l {
+                let start_index = (x_in << x_out_num_variables) | x_out;
+                let step_size = 1 << (l - NUM_OF_ROUNDS);
 
-            let current_evals: Vec<F> = poly
-                .iter()
-                .skip(start_index)
-                .step_by(step_size)
-                .copied()
-                .collect();
+                let current_evals: Vec<F> = poly
+                    .iter()
+                    .skip(start_index)
+                    .step_by(step_size)
+                    .copied()
+                    .collect();
 
-            // We compute p(beta, x_in, x_out) for all beta in {0, 1, inf}^3
-            let p_evals = compute_p_beta(current_evals);
-            let e_in_value = e_in[x_in];
+                let p_evals = compute_p_beta(current_evals);
+                let e_in_value = e_in[x_in];
 
-            for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(&p_evals) {
-                *accumulator += e_in_value * p_eval;
-            }
-        }
-
-        // TODO: This can be hardcoded for better performance.
-        for beta_index in 0..27 {
-            let [index_1, index_2, index_3] = idx4_v2(beta_index);
-            let [_, beta_2, beta_3] = to_base_three_coeff(beta_index);
-            let temp_acc = temp_accumulators[beta_index];
-
-            // Accumulator 1: uses y = beta_2 || beta_3
-            if let Some(index) = index_1 {
-                let y = beta_2 << 1 | beta_3;
-                let e_out_value = e_out[0][(y << x_out_num_variables) | x_out];
-                accumulators.accumulate(0, index, e_out_value * temp_acc);
+                for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(&p_evals) {
+                    *accumulator += e_in_value * p_eval;
+                }
             }
 
-            // Accumulator 2: uses y = beta_3
-            if let Some(index) = index_2 {
-                let y = beta_3;
-                let e_out_value = e_out[1][(y << x_out_num_variables) | x_out];
-                accumulators.accumulate(1, index, e_out_value * temp_acc);
-            }
+            for beta_index in 0..27 {
+                let [index_1, index_2, index_3] = idx4_v2(beta_index);
+                let [_, beta_2, beta_3] = to_base_three_coeff(beta_index);
+                let temp_acc = temp_accumulators[beta_index];
 
-            // Accumulator 3: uses x_out directly
-            if let Some(index) = index_3 {
-                accumulators.accumulate(2, index, e_out[2][x_out] * temp_acc);
+                if let Some(index) = index_1 {
+                    let y = beta_2 << 1 | beta_3;
+                    let e_out_value = e_out[0][(y << x_out_num_variables) | x_out];
+                    local_accumulators.accumulate(0, index, e_out_value * temp_acc);
+                }
+
+                if let Some(index) = index_2 {
+                    let y = beta_3;
+                    let e_out_value = e_out[1][(y << x_out_num_variables) | x_out];
+                    local_accumulators.accumulate(1, index, e_out_value * temp_acc);
+                }
+
+                if let Some(index) = index_3 {
+                    local_accumulators.accumulate(2, index, e_out[2][x_out] * temp_acc);
+                }
             }
-        }
-    }
+            // Each thread returns its partial result.
+            local_accumulators
+            // --- END: Logic for each thread ---
+        })
+        // 2. `reduce` combines the results from all threads.
+        .reduce(
+            // Function to create an initial empty accumulator
+            || Accumulators::<EF>::new_empty(),
+            // Function to combine two accumulators (a and b)
+            |mut a, b| {
+                for i in 0..a.accumulators.len() {
+                    for j in 0..a.accumulators[i].len() {
+                        a.accumulators[i][j] += b.accumulators[i][j];
+                    }
+                }
+                a
+            },
+        );
+
     accumulators
 }
 
@@ -320,40 +335,50 @@ where
     // eq_w_remaining = eq(w_i, w_{i+1}, ..., w_l)
     let eq_w_remaining = eval_eq_in_hypercube(&w.0[i..num_vars].to_vec());
 
-    let mut t = Vec::with_capacity(2);
-    // For t(0), we need p(r_[<i], 0, x_prime)
-    let t_0: EF = (0..(1 << num_vars_after_fold))
+    // Optimization: compute p(r₁,r₂,r₃, u, x') for u ∈ {0,1} only once
+    // We'll reuse these values for both computing t and folding the polynomial
+    let poly_evals: Vec<(EF, EF)> = (0..(1 << num_vars_after_fold))
         .into_par_iter()
         .map(|x_prime| {
             // compute p(r_1, r_2, r_3, 0, x_prime)
             // p(r_[<i], 0, x') = Σ_{b ∈ {0,1}^{i-1}}  ẽq(r_[<i], b) · p(b, 0, x')
-            let p_at_r_0_x: EF = (0..(1 << NUM_OF_ROUNDS))
+            let p_at_0: EF = (0..(1 << NUM_OF_ROUNDS))
                 .map(|b| {
-                    let index = (b << (num_vars_after_fold + 1)) | x_prime;
+                    //let index = (b << (num_vars_after_fold + 1)) | x_prime;
+                    let index =
+                        (b << (num_vars_after_fold + 1)) | (0 << num_vars_after_fold) | x_prime;
                     eq_challenges[b] * EF::from(original_poly.as_slice()[index])
                 })
                 .sum();
-            eq_w_remaining[x_prime] * p_at_r_0_x
-        })
-        .sum();
 
-    // For t(1), we need p(r_[<i], 1, x_prime)
-    let t_1: EF = (0..(1 << num_vars_after_fold))
-        .into_par_iter()
-        .map(|x_prime| {
             // compute p(r_1, r_2, r_3, 1, x_prime)
             // p(r_[<i], 1, x') = Σ_{b ∈ {0,1}^{i-1}}  ẽq(r_[<i], b) · p(b, 1, x')
-            let p_at_r_1_x: EF = (0..(1 << NUM_OF_ROUNDS))
+            let p_at_1: EF = (0..(1 << NUM_OF_ROUNDS))
                 .map(|b| {
                     let index =
                         (b << (num_vars_after_fold + 1)) | (1 << num_vars_after_fold) | x_prime;
                     eq_challenges[b] * EF::from(original_poly.as_slice()[index])
                 })
                 .sum();
-            eq_w_remaining[x_prime] * p_at_r_1_x
+
+            (p_at_0, p_at_1)
         })
+        .collect();
+
+    // Use the precomputed values to calculate t_0 and t_1
+    let t_0: EF = poly_evals
+        .par_iter()
+        .enumerate()
+        .map(|(x_prime, (p0, _))| eq_w_remaining[x_prime] * *p0)
         .sum();
 
+    let t_1: EF = poly_evals
+        .par_iter()
+        .enumerate()
+        .map(|(x_prime, (_, p1))| eq_w_remaining[x_prime] * *p1)
+        .sum();
+
+    let mut t = Vec::with_capacity(2);
     t.push(t_0);
     t.push(t_1);
 
@@ -370,31 +395,11 @@ where
         + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_i
         + round_poly_evals[0];
 
-    // Prepare for round 5 , fold the polynomial
-
-    let new_poly_size = 1 << (num_vars_after_fold);
-    let new_poly_evals: Vec<EF> = (0..new_poly_size)
+    // Prepare for round 5, fold the polynomial
+    // Reuse the precomputed p(r₁,r₂,r₃, 0, x') and p(r₁,r₂,r₃, 1, x')
+    let new_poly_evals: Vec<EF> = poly_evals
         .into_par_iter()
-        .map(|x_next| {
-            // compute p(r₁,r₂,r₃, 0, x_next)
-            let p_at_0: EF = (0..(1 << NUM_OF_ROUNDS))
-                .map(|b| {
-                    let index =
-                        (b << (num_vars_after_fold + 1)) | (0 << num_vars_after_fold) | x_next;
-                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
-                })
-                .sum();
-
-            // compute p(r₁,r₂,r₃, 1, x_next)
-            let p_at_1: EF = (0..(1 << NUM_OF_ROUNDS))
-                .map(|b| {
-                    let index =
-                        (b << (num_vars_after_fold + 1)) | (1 << num_vars_after_fold) | x_next;
-                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
-                })
-                .sum();
-            p_at_0 + r_i * (p_at_1 - p_at_0)
-        })
+        .map(|(p_at_0, p_at_1)| p_at_0 + r_i * (p_at_1 - p_at_0))
         .collect();
 
     let new_folded_poly = EvaluationsList::new(new_poly_evals);

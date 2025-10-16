@@ -22,22 +22,28 @@ pub fn compute_accumulators<F: Field>(
     // For x'' in {0 .. 2^{l - 3}}:
     for x in 0..1 << (l - NUM_OF_ROUNDS) {
         // We compute p_1(beta, x'') for all beta in {0, 1, inf}^3
-        let current_evals_1: Vec<F> = poly_1
+        let mut current_evals_1 = [F::ZERO; 8];
+        let mut iter_1 = poly_1
             .iter()
             .skip(x)
-            .step_by(1 << (l - NUM_OF_ROUNDS))
-            .cloned()
-            .collect();
-        let evals_1 = compute_p_beta(current_evals_1);
+            .step_by(1 << (l - NUM_OF_ROUNDS));
+        for slot in current_evals_1.iter_mut() {
+            *slot = *iter_1.next().expect("Should have 8 elements");
+        }
+        let mut evals_1 = [F::ZERO; 27];
+        compute_p_beta(&current_evals_1, &mut evals_1);
 
         // We compute p_2(beta, x'') for all beta in {0, 1, inf}^3
-        let current_evals_2: Vec<F> = poly_2
+        let mut current_evals_2 = [F::ZERO; 8];
+        let mut iter_2 = poly_2
             .iter()
             .skip(x)
-            .step_by(1 << (l - NUM_OF_ROUNDS))
-            .cloned()
-            .collect();
-        let evals_2 = compute_p_beta(current_evals_2);
+            .step_by(1 << (l - NUM_OF_ROUNDS));
+        for slot in current_evals_2.iter_mut() {
+            *slot = *iter_2.next().expect("Should have 8 elements");
+        }
+        let mut evals_2 = [F::ZERO; 27];
+        compute_p_beta(&current_evals_2, &mut evals_2);
 
         // For each beta in {0, 1, inf}^3:
         // (We have 27 = 3 ^ NUM_OF_ROUNDS number of betas)

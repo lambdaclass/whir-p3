@@ -1,16 +1,12 @@
 use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
-    sumcheck::small_value_utils::{
-        Accumulators, compute_p_beta, idx4, idx4_v2, to_base_three_coeff,
-    },
-    whir::verifier::sumcheck,
+    sumcheck::small_value_utils::{Accumulators, compute_p_beta},
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
-use super::sumcheck_polynomial::SumcheckPolynomial;
 use p3_maybe_rayon::prelude::IntoParallelIterator;
 use p3_multilinear_util::eq::eval_eq;
 // WE ASSUME THE NUMBER OF ROUNDS WE ARE DOING WITH SMALL VALUES IS 3
@@ -46,75 +42,167 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
-    // 1. The `for` loop is converted to a parallel iterator.
-    let accumulators = (0..1 << x_out_num_variables)
+    let num_x_in = 1 << half_l;
+    let step_size = 1 << (l - NUM_OF_ROUNDS);
+
+    (0..1 << x_out_num_variables)
         .into_par_iter()
         .map(|x_out| {
-            // --- START: Logic for each thread ---
-            // Each thread computes its own local accumulators.
-            let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
+            // Each worker keeps its own local buffers to avoid synchronization.
+            let mut temp_accumulators = [EF::ZERO; 27];
+            let mut p_evals_buffer = [F::ZERO; 27];
             let mut local_accumulators = Accumulators::<EF>::new_empty();
 
-            for x_in in 0..1 << half_l {
+            for x_in in 0..num_x_in {
                 let start_index = (x_in << x_out_num_variables) | x_out;
-                let step_size = 1 << (l - NUM_OF_ROUNDS);
 
-                let current_evals: Vec<F> = poly
-                    .iter()
-                    .skip(start_index)
-                    .step_by(step_size)
-                    .copied()
-                    .collect();
+                // Collect directly into a fixed-size array to avoid heap allocations.
+                let mut current_evals = [F::ZERO; 8];
+                let mut iter = poly.iter().skip(start_index).step_by(step_size);
+                for slot in current_evals.iter_mut() {
+                    *slot = *iter.next().expect("Should have 8 elements");
+                }
 
-                let p_evals = compute_p_beta(current_evals);
+                compute_p_beta(&current_evals, &mut p_evals_buffer);
                 let e_in_value = e_in[x_in];
 
-                for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(&p_evals) {
-                    *accumulator += e_in_value * p_eval;
+                for (accumulator, &p_eval_base) in
+                    temp_accumulators.iter_mut().zip(p_evals_buffer.iter())
+                {
+                    *accumulator += e_in_value * EF::from(p_eval_base);
                 }
             }
 
-            for beta_index in 0..27 {
-                let [index_1, index_2, index_3] = idx4_v2(beta_index);
-                let [_, beta_2, beta_3] = to_base_three_coeff(beta_index);
-                let temp_acc = temp_accumulators[beta_index];
+            let temp_acc = &temp_accumulators;
+            let e_out_round0 = &e_out[0];
+            let e_out_round1 = &e_out[1];
+            let e_out_round2 = &e_out[2];
 
-                if let Some(index) = index_1 {
-                    let y = beta_2 << 1 | beta_3;
-                    let e_out_value = e_out[0][(y << x_out_num_variables) | x_out];
-                    local_accumulators.accumulate(0, index, e_out_value * temp_acc);
-                }
+            let e_out_0 = [
+                e_out_round0[(0 << x_out_num_variables) | x_out],
+                e_out_round0[(1 << x_out_num_variables) | x_out],
+                e_out_round0[(2 << x_out_num_variables) | x_out],
+                e_out_round0[(3 << x_out_num_variables) | x_out],
+            ];
+            let e_out_1 = [
+                e_out_round1[(0 << x_out_num_variables) | x_out],
+                e_out_round1[(1 << x_out_num_variables) | x_out],
+            ];
+            let e_out_2 = e_out_round2[x_out];
 
-                if let Some(index) = index_2 {
-                    let y = beta_3;
-                    let e_out_value = e_out[1][(y << x_out_num_variables) | x_out];
-                    local_accumulators.accumulate(1, index, e_out_value * temp_acc);
-                }
+            // beta_index = 0; b=(0,0,0);
+            local_accumulators.accumulate(0, 0, e_out_0[0] * temp_acc[0]);
+            local_accumulators.accumulate(1, 0, e_out_1[0] * temp_acc[0]);
+            local_accumulators.accumulate(2, 0, e_out_2 * temp_acc[0]);
 
-                if let Some(index) = index_3 {
-                    local_accumulators.accumulate(2, index, e_out[2][x_out] * temp_acc);
-                }
-            }
-            // Each thread returns its partial result.
+            // beta_index = 1; b=(0,0,1);
+            local_accumulators.accumulate(0, 0, e_out_0[1] * temp_acc[1]);
+            local_accumulators.accumulate(1, 0, e_out_1[1] * temp_acc[1]);
+            local_accumulators.accumulate(2, 1, e_out_2 * temp_acc[1]);
+
+            // beta_index = 2; b=(0,0,2);
+            local_accumulators.accumulate(2, 2, e_out_2 * temp_acc[2]);
+
+            // beta_index = 3; b=(0,1,0);
+            local_accumulators.accumulate(0, 0, e_out_0[2] * temp_acc[3]);
+            local_accumulators.accumulate(1, 1, e_out_1[0] * temp_acc[3]);
+            local_accumulators.accumulate(2, 3, e_out_2 * temp_acc[3]);
+
+            // beta_index = 4; b=(0,1,1);
+            local_accumulators.accumulate(0, 0, e_out_0[3] * temp_acc[4]);
+            local_accumulators.accumulate(1, 1, e_out_1[1] * temp_acc[4]);
+            local_accumulators.accumulate(2, 4, e_out_2 * temp_acc[4]);
+
+            // beta_index = 5; b=(0,1,2);
+            local_accumulators.accumulate(2, 5, e_out_2 * temp_acc[5]);
+
+            // beta_index = 6; b=(0,2,0);
+            local_accumulators.accumulate(1, 2, e_out_1[0] * temp_acc[6]);
+            local_accumulators.accumulate(2, 6, e_out_2 * temp_acc[6]);
+
+            // beta_index = 7; b=(0,2,1);
+            local_accumulators.accumulate(1, 2, e_out_1[1] * temp_acc[7]);
+            local_accumulators.accumulate(2, 7, e_out_2 * temp_acc[7]);
+
+            // beta_index = 8; b=(0,2,2);
+            local_accumulators.accumulate(2, 8, e_out_2 * temp_acc[8]);
+
+            // beta_index = 9; b=(1,0,0);
+            local_accumulators.accumulate(0, 1, e_out_0[0] * temp_acc[9]);
+            local_accumulators.accumulate(1, 3, e_out_1[0] * temp_acc[9]);
+            local_accumulators.accumulate(2, 9, e_out_2 * temp_acc[9]);
+
+            // beta_index = 10; b=(1,0,1);
+            local_accumulators.accumulate(0, 1, e_out_0[1] * temp_acc[10]);
+            local_accumulators.accumulate(1, 3, e_out_1[1] * temp_acc[10]);
+            local_accumulators.accumulate(2, 10, e_out_2 * temp_acc[10]);
+
+            // beta_index = 11; b=(1,0,2);
+            local_accumulators.accumulate(2, 11, e_out_2 * temp_acc[11]);
+
+            // beta_index = 12; b=(1,1,0);
+            local_accumulators.accumulate(0, 1, e_out_0[2] * temp_acc[12]);
+            local_accumulators.accumulate(1, 4, e_out_1[0] * temp_acc[12]);
+            local_accumulators.accumulate(2, 12, e_out_2 * temp_acc[12]);
+
+            // beta_index = 13; b=(1,1,1);
+            local_accumulators.accumulate(0, 1, e_out_0[3] * temp_acc[13]);
+            local_accumulators.accumulate(1, 4, e_out_1[1] * temp_acc[13]);
+            local_accumulators.accumulate(2, 13, e_out_2 * temp_acc[13]);
+
+            // beta_index = 14; b=(1,1,2);
+            local_accumulators.accumulate(2, 14, e_out_2 * temp_acc[14]);
+
+            // beta_index = 15; b=(1,2,0);
+            local_accumulators.accumulate(1, 5, e_out_1[0] * temp_acc[15]);
+            local_accumulators.accumulate(2, 15, e_out_2 * temp_acc[15]);
+
+            // beta_index = 16; b=(1,2,1);
+            local_accumulators.accumulate(1, 5, e_out_1[1] * temp_acc[16]);
+            local_accumulators.accumulate(2, 16, e_out_2 * temp_acc[16]);
+
+            // beta_index = 17; b=(1,2,2);
+            local_accumulators.accumulate(2, 17, e_out_2 * temp_acc[17]);
+
+            // beta_index = 18; b=(2,0,0);
+            local_accumulators.accumulate(1, 6, e_out_1[0] * temp_acc[18]);
+            local_accumulators.accumulate(2, 18, e_out_2 * temp_acc[18]);
+
+            // beta_index = 19; b=(2,0,1);
+            local_accumulators.accumulate(1, 6, e_out_1[1] * temp_acc[19]);
+            local_accumulators.accumulate(2, 19, e_out_2 * temp_acc[19]);
+
+            // beta_index = 20; b=(2,0,2);
+            local_accumulators.accumulate(2, 20, e_out_2 * temp_acc[20]);
+
+            // beta_index = 21; b=(2,1,0);
+            local_accumulators.accumulate(1, 7, e_out_1[0] * temp_acc[21]);
+            local_accumulators.accumulate(2, 21, e_out_2 * temp_acc[21]);
+
+            // beta_index = 22; b=(2,1,1);
+            local_accumulators.accumulate(1, 7, e_out_1[1] * temp_acc[22]);
+            local_accumulators.accumulate(2, 22, e_out_2 * temp_acc[22]);
+
+            // beta_index = 23; b=(2,1,2);
+            local_accumulators.accumulate(2, 23, e_out_2 * temp_acc[23]);
+
+            // beta_index = 24; b=(2,2,0);
+            local_accumulators.accumulate(1, 8, e_out_1[0] * temp_acc[24]);
+            local_accumulators.accumulate(2, 24, e_out_2 * temp_acc[24]);
+
+            // beta_index = 25; b=(2,2,1);
+            local_accumulators.accumulate(1, 8, e_out_1[1] * temp_acc[25]);
+            local_accumulators.accumulate(2, 25, e_out_2 * temp_acc[25]);
+
+            // beta_index = 26; b=(2,2,2);
+            local_accumulators.accumulate(2, 26, e_out_2 * temp_acc[26]);
+
             local_accumulators
-            // --- END: Logic for each thread ---
         })
-        // 2. `reduce` combines the results from all threads.
         .reduce(
-            // Function to create an initial empty accumulator
             || Accumulators::<EF>::new_empty(),
-            // Function to combine two accumulators (a and b)
-            |mut a, b| {
-                for i in 0..a.accumulators.len() {
-                    for j in 0..a.accumulators[i].len() {
-                        a.accumulators[i][j] += b.accumulators[i][j];
-                    }
-                }
-                a
-            },
-        );
-
-    accumulators
+            |a, b| a + b,
+        )
 }
 
 // Given a point w = (w_1, ..., w_l), it returns the evaluations of eq(w, x) for all x in {0, 1}^l.

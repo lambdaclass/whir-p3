@@ -1,7 +1,7 @@
 use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
-    sumcheck::small_value_utils::{Accumulators, compute_p_beta},
+    sumcheck::small_value_utils::{Accumulators, compute_p_beta, to_base_three_coeff},
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
@@ -90,119 +90,32 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
             ];
             let e_out_2 = e_out_round2[x_out];
 
-            // beta_index = 0; b=(0,0,0);
-            local_accumulators.accumulate(0, 0, e_out_0[0] * temp_acc[0]);
-            local_accumulators.accumulate(1, 0, e_out_1[0] * temp_acc[0]);
-            local_accumulators.accumulate(2, 0, e_out_2 * temp_acc[0]);
+            for beta_index in 0..27 {
+                let [b1, b2, b3] = to_base_three_coeff(beta_index);
 
-            // beta_index = 1; b=(0,0,1);
-            local_accumulators.accumulate(0, 0, e_out_0[1] * temp_acc[1]);
-            local_accumulators.accumulate(1, 0, e_out_1[1] * temp_acc[1]);
-            local_accumulators.accumulate(2, 1, e_out_2 * temp_acc[1]);
+                // Esta condición reemplaza la lógica de idx4_v2, y es más clara.
+                // Solo procesamos los puntos que no contienen 'infinito' (representado por 2).
+                if b1 < 2 && b2 < 2 && b3 < 2 {
+                    let temp_acc_val = temp_accumulators[beta_index];
 
-            // beta_index = 2; b=(0,0,2);
-            local_accumulators.accumulate(2, 2, e_out_2 * temp_acc[2]);
+                    // --- Ronda 1 (índice `i` en el paper) ---
+                    let y_r1 = (b2 << 1) | b3; // y = b₂ || b₃
+                    let e_out_r1 = e_out[0][(y_r1 << x_out_num_variables) | x_out];
+                    local_accumulators.accumulate(0, b1, e_out_r1 * temp_acc_val);
 
-            // beta_index = 3; b=(0,1,0);
-            local_accumulators.accumulate(0, 0, e_out_0[2] * temp_acc[3]);
-            local_accumulators.accumulate(1, 1, e_out_1[0] * temp_acc[3]);
-            local_accumulators.accumulate(2, 3, e_out_2 * temp_acc[3]);
+                    // --- Ronda 2 (índice `i`+1) ---
+                    let y_r2 = b3; // y = b₃
+                    let e_out_r2 = e_out[1][(y_r2 << x_out_num_variables) | x_out];
+                    local_accumulators.accumulate(1, b1 * 3 + b2, e_out_r2 * temp_acc_val);
 
-            // beta_index = 4; b=(0,1,1);
-            local_accumulators.accumulate(0, 0, e_out_0[3] * temp_acc[4]);
-            local_accumulators.accumulate(1, 1, e_out_1[1] * temp_acc[4]);
-            local_accumulators.accumulate(2, 4, e_out_2 * temp_acc[4]);
-
-            // beta_index = 5; b=(0,1,2);
-            local_accumulators.accumulate(2, 5, e_out_2 * temp_acc[5]);
-
-            // beta_index = 6; b=(0,2,0);
-            local_accumulators.accumulate(1, 2, e_out_1[0] * temp_acc[6]);
-            local_accumulators.accumulate(2, 6, e_out_2 * temp_acc[6]);
-
-            // beta_index = 7; b=(0,2,1);
-            local_accumulators.accumulate(1, 2, e_out_1[1] * temp_acc[7]);
-            local_accumulators.accumulate(2, 7, e_out_2 * temp_acc[7]);
-
-            // beta_index = 8; b=(0,2,2);
-            local_accumulators.accumulate(2, 8, e_out_2 * temp_acc[8]);
-
-            // beta_index = 9; b=(1,0,0);
-            local_accumulators.accumulate(0, 1, e_out_0[0] * temp_acc[9]);
-            local_accumulators.accumulate(1, 3, e_out_1[0] * temp_acc[9]);
-            local_accumulators.accumulate(2, 9, e_out_2 * temp_acc[9]);
-
-            // beta_index = 10; b=(1,0,1);
-            local_accumulators.accumulate(0, 1, e_out_0[1] * temp_acc[10]);
-            local_accumulators.accumulate(1, 3, e_out_1[1] * temp_acc[10]);
-            local_accumulators.accumulate(2, 10, e_out_2 * temp_acc[10]);
-
-            // beta_index = 11; b=(1,0,2);
-            local_accumulators.accumulate(2, 11, e_out_2 * temp_acc[11]);
-
-            // beta_index = 12; b=(1,1,0);
-            local_accumulators.accumulate(0, 1, e_out_0[2] * temp_acc[12]);
-            local_accumulators.accumulate(1, 4, e_out_1[0] * temp_acc[12]);
-            local_accumulators.accumulate(2, 12, e_out_2 * temp_acc[12]);
-
-            // beta_index = 13; b=(1,1,1);
-            local_accumulators.accumulate(0, 1, e_out_0[3] * temp_acc[13]);
-            local_accumulators.accumulate(1, 4, e_out_1[1] * temp_acc[13]);
-            local_accumulators.accumulate(2, 13, e_out_2 * temp_acc[13]);
-
-            // beta_index = 14; b=(1,1,2);
-            local_accumulators.accumulate(2, 14, e_out_2 * temp_acc[14]);
-
-            // beta_index = 15; b=(1,2,0);
-            local_accumulators.accumulate(1, 5, e_out_1[0] * temp_acc[15]);
-            local_accumulators.accumulate(2, 15, e_out_2 * temp_acc[15]);
-
-            // beta_index = 16; b=(1,2,1);
-            local_accumulators.accumulate(1, 5, e_out_1[1] * temp_acc[16]);
-            local_accumulators.accumulate(2, 16, e_out_2 * temp_acc[16]);
-
-            // beta_index = 17; b=(1,2,2);
-            local_accumulators.accumulate(2, 17, e_out_2 * temp_acc[17]);
-
-            // beta_index = 18; b=(2,0,0);
-            local_accumulators.accumulate(1, 6, e_out_1[0] * temp_acc[18]);
-            local_accumulators.accumulate(2, 18, e_out_2 * temp_acc[18]);
-
-            // beta_index = 19; b=(2,0,1);
-            local_accumulators.accumulate(1, 6, e_out_1[1] * temp_acc[19]);
-            local_accumulators.accumulate(2, 19, e_out_2 * temp_acc[19]);
-
-            // beta_index = 20; b=(2,0,2);
-            local_accumulators.accumulate(2, 20, e_out_2 * temp_acc[20]);
-
-            // beta_index = 21; b=(2,1,0);
-            local_accumulators.accumulate(1, 7, e_out_1[0] * temp_acc[21]);
-            local_accumulators.accumulate(2, 21, e_out_2 * temp_acc[21]);
-
-            // beta_index = 22; b=(2,1,1);
-            local_accumulators.accumulate(1, 7, e_out_1[1] * temp_acc[22]);
-            local_accumulators.accumulate(2, 22, e_out_2 * temp_acc[22]);
-
-            // beta_index = 23; b=(2,1,2);
-            local_accumulators.accumulate(2, 23, e_out_2 * temp_acc[23]);
-
-            // beta_index = 24; b=(2,2,0);
-            local_accumulators.accumulate(1, 8, e_out_1[0] * temp_acc[24]);
-            local_accumulators.accumulate(2, 24, e_out_2 * temp_acc[24]);
-
-            // beta_index = 25; b=(2,2,1);
-            local_accumulators.accumulate(1, 8, e_out_1[1] * temp_acc[25]);
-            local_accumulators.accumulate(2, 25, e_out_2 * temp_acc[25]);
-
-            // beta_index = 26; b=(2,2,2);
-            local_accumulators.accumulate(2, 26, e_out_2 * temp_acc[26]);
-
+                    // --- Ronda 3 (índice `i`+2) ---
+                    let e_out_r3 = e_out[2][x_out];
+                    local_accumulators.accumulate(2, beta_index, e_out_r3 * temp_acc_val);
+                }
+            }
             local_accumulators
         })
-        .reduce(
-            || Accumulators::<EF>::new_empty(),
-            |a, b| a + b,
-        )
+        .reduce(|| Accumulators::<EF>::new_empty(), |a, b| a + b)
 }
 
 // Given a point w = (w_1, ..., w_l), it returns the evaluations of eq(w, x) for all x in {0, 1}^l.

@@ -8,10 +8,11 @@ use crate::{
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
+use rayon::iter::ParallelIterator;
 
 use super::sumcheck_polynomial::SumcheckPolynomial;
+use p3_maybe_rayon::prelude::IntoParallelIterator;
 use p3_multilinear_util::eq::eval_eq;
-
 // WE ASSUME THE NUMBER OF ROUNDS WE ARE DOING WITH SMALL VALUES IS 3
 const NUM_OF_ROUNDS: usize = 3;
 
@@ -320,25 +321,41 @@ where
     let eq_w_remaining = eval_eq_in_hypercube(&w.0[i..num_vars].to_vec());
 
     let mut t = Vec::with_capacity(2);
-    for u_val in 0..2 {
-        let t_u: EF = (0..(1 << num_vars_after_fold))
-            .map(|x_prime| {
-                // compute p(r_1, r_2, r_3, u, x_prime)
-                // p(r_[<i], u, x') = Σ_{b ∈ {0,1}^{i-1}}  ẽq(r_[<i], b) · p(b, u, x')
-                let p_at_r_u_x: EF = (0..(1 << NUM_OF_ROUNDS))
-                    .map(|b| {
-                        let index = (b << (num_vars_after_fold + 1))
-                            | (u_val as usize) << num_vars_after_fold
-                            | x_prime;
-                        eq_challenges[b] * EF::from(original_poly.as_slice()[index])
-                    })
-                    .sum();
-                eq_w_remaining[x_prime] * p_at_r_u_x
-            })
-            .sum();
+    // For t(0), we need p(r_[<i], 0, x_prime)
+    let t_0: EF = (0..(1 << num_vars_after_fold))
+        .into_par_iter()
+        .map(|x_prime| {
+            // compute p(r_1, r_2, r_3, 0, x_prime)
+            // p(r_[<i], 0, x') = Σ_{b ∈ {0,1}^{i-1}}  ẽq(r_[<i], b) · p(b, 0, x')
+            let p_at_r_0_x: EF = (0..(1 << NUM_OF_ROUNDS))
+                .map(|b| {
+                    let index = (b << (num_vars_after_fold + 1)) | x_prime;
+                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
+                })
+                .sum();
+            eq_w_remaining[x_prime] * p_at_r_0_x
+        })
+        .sum();
 
-        t.push(t_u);
-    }
+    // For t(1), we need p(r_[<i], 1, x_prime)
+    let t_1: EF = (0..(1 << num_vars_after_fold))
+        .into_par_iter()
+        .map(|x_prime| {
+            // compute p(r_1, r_2, r_3, 1, x_prime)
+            // p(r_[<i], 1, x') = Σ_{b ∈ {0,1}^{i-1}}  ẽq(r_[<i], b) · p(b, 1, x')
+            let p_at_r_1_x: EF = (0..(1 << NUM_OF_ROUNDS))
+                .map(|b| {
+                    let index =
+                        (b << (num_vars_after_fold + 1)) | (1 << num_vars_after_fold) | x_prime;
+                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
+                })
+                .sum();
+            eq_w_remaining[x_prime] * p_at_r_1_x
+        })
+        .sum();
+
+    t.push(t_0);
+    t.push(t_1);
 
     let linear_evals = compute_linear_function(&w.0[..i], &challenges);
     let round_poly_evals = get_evals_from_l_and_t(&linear_evals, &t);
@@ -356,29 +373,30 @@ where
     // Prepare for round 5 , fold the polynomial
 
     let new_poly_size = 1 << (num_vars_after_fold);
-    let mut new_poly_evals = Vec::with_capacity(new_poly_size);
+    let new_poly_evals: Vec<EF> = (0..new_poly_size)
+        .into_par_iter()
+        .map(|x_next| {
+            // compute p(r₁,r₂,r₃, 0, x_next)
+            let p_at_0: EF = (0..(1 << NUM_OF_ROUNDS))
+                .map(|b| {
+                    let index =
+                        (b << (num_vars_after_fold + 1)) | (0 << num_vars_after_fold) | x_next;
+                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
+                })
+                .sum();
 
-    for x_next in 0..new_poly_size {
-        // compute p(r₁,r₂,r₃, 0, x_next)
-        let p_at_0: EF = (0..(1 << NUM_OF_ROUNDS))
-            .map(|b| {
-                let index = (b << (num_vars_after_fold + 1)) | (0 << num_vars_after_fold) | x_next;
-                eq_challenges[b] * EF::from(original_poly.as_slice()[index])
-            })
-            .sum();
+            // compute p(r₁,r₂,r₃, 1, x_next)
+            let p_at_1: EF = (0..(1 << NUM_OF_ROUNDS))
+                .map(|b| {
+                    let index =
+                        (b << (num_vars_after_fold + 1)) | (1 << num_vars_after_fold) | x_next;
+                    eq_challenges[b] * EF::from(original_poly.as_slice()[index])
+                })
+                .sum();
+            p_at_0 + r_i * (p_at_1 - p_at_0)
+        })
+        .collect();
 
-        // compute p(r₁,r₂,r₃, 1, x_next)
-        let p_at_1: EF = (0..(1 << NUM_OF_ROUNDS))
-            .map(|b| {
-                let index = (b << (num_vars_after_fold + 1)) | (1 << num_vars_after_fold) | x_next;
-                eq_challenges[b] * EF::from(original_poly.as_slice()[index])
-            })
-            .sum();
-
-        // fold the polynomial
-        let folded_val = p_at_0 + r_i * (p_at_1 - p_at_0);
-        new_poly_evals.push(folded_val);
-    }
     let new_folded_poly = EvaluationsList::new(new_poly_evals);
 
     (r_i, new_folded_poly)
@@ -413,6 +431,7 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
 
             // For t_i(0), we need p(r_[<i-1], 0, x_L, x_R).
             let t_0: EF = (0..(1 << num_vars_x_r))
+                .into_par_iter()
                 .map(|x_r| {
                     let sum_l: EF = (0..eq_l.len())
                         .map(|x_l| eq_l[x_l] * (poly.as_slice()[(x_l << num_vars_x_r) | x_r]))
@@ -423,6 +442,7 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
 
             // For t_i(1), we need p(r_[<i-1], 1, x_L, x_R)
             let t_1: EF = (0..(1 << num_vars_x_r))
+                .into_par_iter()
                 .map(|x_r| {
                     let sum_l: EF = (0..eq_l.len())
                         .map(|x_l| {
@@ -442,11 +462,13 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
             let eq_l = eval_eq_in_hypercube(&w.0[i..num_vars].to_vec());
             // For t_i(0), we need p(r_[<i-1], 0, x)
             let t_0: EF = (0..(1 << (num_vars_poly_current - 1)))
+                .into_par_iter()
                 .map(|x| eq_l[x] * (poly.as_slice()[x]))
                 .sum();
 
             // For t_i(1), we need p(r_[<i-1], 1, x)
             let t_1: EF = (0..(1 << (num_vars_poly_current - 1)))
+                .into_par_iter()
                 .map(|x| eq_l[x] * (poly.as_slice()[(1 << (num_vars_poly_current - 1)) | x]))
                 .sum();
             t.push(t_0);

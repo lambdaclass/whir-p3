@@ -137,7 +137,7 @@ where
     {
         assert_ne!(folding_factor, 0);
         let mut res = Vec::with_capacity(folding_factor);
-
+        // puedo aca a weights no pasarlo  y poner _ , luego mas abajo uso let weights = EvaluationsList::new(vec![w.eq_poly(&MultilinearPoint::new(res.clone()))]);
         let (mut weights, mut sum) = statement.combine::<F>(combination_randomness);
 
         // We assume the the statemas has only one constraint.

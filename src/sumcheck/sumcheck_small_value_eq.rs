@@ -3,11 +3,10 @@ use crate::{
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::small_value_utils::{Accumulators, compute_p_beta, to_base_three_coeff},
 };
+use core::convert::TryInto;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-
-use p3_maybe_rayon::prelude::IntoParallelIterator;
+use p3_maybe_rayon::prelude::*;
 use p3_multilinear_util::eq::eval_eq;
 // WE ASSUME THE NUMBER OF ROUNDS WE ARE DOING WITH SMALL VALUES IS 3
 const NUM_OF_ROUNDS: usize = 3;
@@ -30,6 +29,39 @@ fn precompute_e_out<F: Field>(w: &MultilinearPoint<F>) -> [Vec<F>; NUM_OF_ROUNDS
     })
 }
 
+/// Reorders the polynomial evaluations to improve cache locality by grouping the 8 values
+/// needed for each `compute_p_beta` invocation contiguously in memory.
+fn transpose_poly_for_svo<F: Field>(
+    poly: &EvaluationsList<F>,
+    num_variables: usize,
+    x_out_num_vars: usize,
+    half_l: usize,
+) -> Vec<F> {
+    let num_x_in = 1 << half_l;
+    let step_size = 1 << (num_variables - NUM_OF_ROUNDS);
+    let block_size = 8;
+
+    let mut transposed_poly = vec![F::ZERO; 1 << num_variables];
+    let x_out_block_size = num_x_in * block_size;
+
+    transposed_poly
+        .par_chunks_mut(x_out_block_size)
+        .enumerate()
+        .for_each(|(x_out, chunk)| {
+            for x_in in 0..num_x_in {
+                let start_index = (x_in << x_out_num_vars) | x_out;
+                let dest_base_index = x_in * block_size;
+
+                let mut iter = poly.iter().skip(start_index).step_by(step_size);
+                for offset in 0..block_size {
+                    chunk[dest_base_index + offset] = *iter.next().unwrap();
+                }
+            }
+        });
+
+    transposed_poly
+}
+
 // Procedure 9. Page 37.
 fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     poly: &EvaluationsList<F>,
@@ -42,28 +74,31 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
+    let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
     let num_x_in = 1 << half_l;
-    let step_size = 1 << (l - NUM_OF_ROUNDS);
 
     (0..1 << x_out_num_variables)
         .into_par_iter()
         .map(|x_out| {
-            // Each worker keeps its own local buffers to avoid synchronization.
+            // Cada hilo paralelo trabaja con sus propios buffers locales en el stack,
+            // evitando la sincronización y las asignaciones de memoria en el heap.
             let mut temp_accumulators = [EF::ZERO; 27];
             let mut p_evals_buffer = [F::ZERO; 27];
             let mut local_accumulators = Accumulators::<EF>::new_empty();
 
+            // Este es el bucle principal, donde se realiza la mayor parte del trabajo.
             for x_in in 0..num_x_in {
-                let start_index = (x_in << x_out_num_variables) | x_out;
+                // 2. OPTIMIZACIÓN DE ACCESO: Se leen los 8 valores necesarios de una sola vez
+                // desde el polinomio pre-procesado. Esto es una copia de memoria contigua,
+                // que es extremadamente rápida.
+                let block_start = (x_out * num_x_in + x_in) * 8;
+                let current_evals: &[F; 8] = transposed_poly[block_start..block_start + 8]
+                    .try_into()
+                    .expect("expected block of length 8");
 
-                // Collect directly into a fixed-size array to avoid heap allocations.
-                let mut current_evals = [F::ZERO; 8];
-                let mut iter = poly.iter().skip(start_index).step_by(step_size);
-                for slot in current_evals.iter_mut() {
-                    *slot = *iter.next().expect("Should have 8 elements");
-                }
-
-                compute_p_beta(&current_evals, &mut p_evals_buffer);
+                // 3. OPTIMIZACIÓN DE CÓMPUTO: Se llama a la función `compute_p_beta` que no
+                // asigna memoria y escribe directamente en un buffer del stack.
+                compute_p_beta(current_evals, &mut p_evals_buffer);
                 let e_in_value = e_in[x_in];
 
                 for (accumulator, &p_eval_base) in
@@ -73,49 +108,38 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
                 }
             }
 
-            let temp_acc = &temp_accumulators;
-            let e_out_round0 = &e_out[0];
-            let e_out_round1 = &e_out[1];
-            let e_out_round2 = &e_out[2];
-
-            let e_out_0 = [
-                e_out_round0[(0 << x_out_num_variables) | x_out],
-                e_out_round0[(1 << x_out_num_variables) | x_out],
-                e_out_round0[(2 << x_out_num_variables) | x_out],
-                e_out_round0[(3 << x_out_num_variables) | x_out],
-            ];
-            let e_out_1 = [
-                e_out_round1[(0 << x_out_num_variables) | x_out],
-                e_out_round1[(1 << x_out_num_variables) | x_out],
-            ];
-            let e_out_2 = e_out_round2[x_out];
-
+            // 4. OPTIMIZACIÓN DE CÓMPUTO Y LEGIBILIDAD: El bloque de 50+ líneas de código
+            // "hardcodeado" se reemplaza por un único bucle algorítmico. Esto es
+            // más fácil de leer, de mantener y permite al compilador aplicar
+            // optimizaciones mucho más potentes (como la vectorización SIMD).
             for beta_index in 0..27 {
                 let [b1, b2, b3] = to_base_three_coeff(beta_index);
 
-                // Esta condición reemplaza la lógica de idx4_v2, y es más clara.
-                // Solo procesamos los puntos que no contienen 'infinito' (representado por 2).
+                // Esta condición filtra los puntos que no están en el hipercubo booleano {0,1}³,
+                // reemplazando la lógica de `idx4_v2`.
                 if b1 < 2 && b2 < 2 && b3 < 2 {
                     let temp_acc_val = temp_accumulators[beta_index];
 
-                    // --- Ronda 1 (índice `i` en el paper) ---
-                    let y_r1 = (b2 << 1) | b3; // y = b₂ || b₃
+                    // --- Acumulación para la Ronda 1 ---
+                    let y_r1 = (b2 << 1) | b3;
                     let e_out_r1 = e_out[0][(y_r1 << x_out_num_variables) | x_out];
                     local_accumulators.accumulate(0, b1, e_out_r1 * temp_acc_val);
 
-                    // --- Ronda 2 (índice `i`+1) ---
-                    let y_r2 = b3; // y = b₃
+                    // --- Acumulación para la Ronda 2 ---
+                    let y_r2 = b3;
                     let e_out_r2 = e_out[1][(y_r2 << x_out_num_variables) | x_out];
                     local_accumulators.accumulate(1, b1 * 3 + b2, e_out_r2 * temp_acc_val);
 
-                    // --- Ronda 3 (índice `i`+2) ---
+                    // --- Acumulación para la Ronda 3 ---
                     let e_out_r3 = e_out[2][x_out];
                     local_accumulators.accumulate(2, beta_index, e_out_r3 * temp_acc_val);
                 }
             }
             local_accumulators
         })
-        .reduce(|| Accumulators::<EF>::new_empty(), |a, b| a + b)
+        // 5. MEJORA DE CALIDAD: Se utiliza la implementación del trait `Add` que definiste
+        // para combinar los resultados de los hilos paralelos de forma limpia e idiomática.
+        .reduce(Accumulators::new_empty, |a, b| a + b)
 }
 
 // Given a point w = (w_1, ..., w_l), it returns the evaluations of eq(w, x) for all x in {0, 1}^l.

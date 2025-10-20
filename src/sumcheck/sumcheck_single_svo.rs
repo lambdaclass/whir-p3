@@ -39,7 +39,7 @@ where
 
         let (weights_init, mut sum) = statement.combine::<F>(combination_randomness);
 
-        // We assume the the statemas has only one constraint.
+        // We assume the the statement has only one constraint.
         let w = statement.constraints[0].point.0.clone();
 
         let (r_1, r_2, r_3) =
@@ -48,9 +48,8 @@ where
         challenges.push(r_2);
         challenges.push(r_3);
 
-        // --- PHASE 2: The Transition Round (Round ℓ₀ + 1) ---
-        // This follows the second step of Algorithm 6: "Follow Algorithm 2".
-        // We call our explicit function that implements this logic.
+        // --- PHASE 2: The Transition Round (Round l_0 + 1) ---
+
         let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
             prover_state,
             evals,
@@ -61,9 +60,8 @@ where
         );
         challenges.push(r_transition);
 
-        // --- PHASE 3: Standard Linear-Time Final Rounds (Rounds ℓ₀ + 2 to ℓ) ---
-        // This follows the final step of Algorithm 6: "Follow Algorithm 5".
-        // We now loop over our explicit function for Algorithm 5's logic.
+        // --- PHASE 3: Standard Linear-Time Final Rounds (Rounds l_0 + 2 to l) ---
+
         for _ in (NUM_SVO_ROUNDS + 1)..folding_factor {
             let r_final = run_final_round_algo5(
                 prover_state,

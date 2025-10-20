@@ -79,7 +79,8 @@ pub fn compute_accumulators<F: Field>(
 
 // Algorithm 4. Page 15.
 // Compute three sumcheck rounds using the small value optimizaition.
-// It Returns the two challenges r_1 and r_2 (TODO: creo que debería devolver también los polys foldeados).
+// It Returns the two challenges r_1 and r_2
+// (TODO: I think it should return also the folded polynomials).
 fn small_value_sumcheck_three_rounds<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     poly_1: &EvaluationsList<F>,
@@ -151,7 +152,7 @@ where
 
     let mul_inf = (r_2 - F::ONE) * r_2;
 
-    // TODO: calcular `(r_2 - F::ONE) * r_2` una sola vez. Lo dejo por ahora así por claridad.
+    // TODO: calculate `(r_2 - F::ONE) * r_2` once. I leave it like this for clarity.
     let lagrange_evals_r_2 = [
         l_0 * (-r_2 + F::ONE),   // L_0 0
         l_0 * r_2,               // L_0 1
@@ -191,10 +192,10 @@ where
     }
 
     // 2. Send S_3(u) to the verifier.
-    // TODO: En realidad no hace falta mandar S_3(1) porque se dedecue usando S_3(0).
+    // TODO: It is not necessary to send S_3(1) because it is deduced using S_3(0).
     prover_state.add_extension_scalars(&round_poly_evals);
 
-    // TODO: Me parece que también va a haber que devolver poly_1 y poly_2 foldeados (con r_1 y r_2) para seguir con el sumcheck.
+    // TODO: I think it is also necessary to return the folded polynomials poly_1 and poly_2 (with r_1 and r_2) to continue with the sumcheck.
     [r_1, r_2]
 }
 
@@ -262,7 +263,7 @@ mod tests {
         assert_eq!(accumulator_round_2.accumulators[2], F::from_int(64));
 
         // A2(inf, 1) = = p(inf,1,0,0)ˆ2 + p(inf,1,0,1)ˆ2 + p(inf,1,1,0)ˆ2 + p(inf,1,1,1)ˆ2
-        //         = 8^2 + 8^2 + 8^2 + 8^2 (haciendo la cuenta se ve que los 4 términos valen 8^2)
+        //         = 8^2 + 8^2 + 8^2 + 8^2 (doing the calculation we see that the 4 terms val 8^2)
         //         = 4 * 8^2
         //         = 256
         assert_eq!(accumulator_round_2.accumulators[7], F::from_int(256));
@@ -281,7 +282,7 @@ mod tests {
 
         // A1(inf) = p(inf,0,0,0)^2 + p(inf,0,0,1)^2 + p(inf,0,1,0)^2 + p(inf,0,1,1)^2
         //         + p(inf,1,0,0)^2 + p(inf,1,0,1)^2 + p(inf,1,1,0)^2 + p(inf,1,1,1)^2
-        //         = (8^2) * 8 (haciendo la cuenta se ve que los 8 términos valen 8^2)
+        //         = (8^2) * 8 (doing the calculation we see that the 8 terms val 8^2)
         //         = 512
         assert_eq!(accumulator_round_1.accumulators[2], F::from_int(512));
     }
@@ -374,7 +375,7 @@ mod tests {
         let l_1 = lagrange_evals_r_1[1];
         let l_inf = lagrange_evals_r_1[2];
 
-        // TODO: calcular `(r_2 - F::ONE) * r_2` una sola vez. Lo dejo por ahora así por claridad.
+        // TODO: calculate `(r_2 - F::ONE) * r_2` once. I leave it like this for clarity.
         let lagrange_evals_r_2 = [
             l_0 * (-r_2 + F::ONE),        // L_0 0
             l_0 * r_2,                    // L_0 1
@@ -399,12 +400,12 @@ mod tests {
 
         // We split
         for (lagrange_index, accumulators_chunk) in accumulators_3.chunks_exact(9).enumerate() {
-            // Los primeros 3 elementos: u2 = 0
+            // The first 3 elements: u2 = 0
             round_poly_evals[0] += lagrange_evals_r_2[lagrange_index * 3] * accumulators_chunk[0];
             round_poly_evals[1] += lagrange_evals_r_2[lagrange_index * 3] * accumulators_chunk[1];
             round_poly_evals[2] += lagrange_evals_r_2[lagrange_index * 3] * accumulators_chunk[2];
 
-            // Los siguientes 3 elementos: u2 = 1
+            // The next 3 elements: u2 = 1
             round_poly_evals[0] +=
                 lagrange_evals_r_2[lagrange_index * 3 + 1] * accumulators_chunk[3];
             round_poly_evals[1] +=
@@ -412,7 +413,7 @@ mod tests {
             round_poly_evals[2] +=
                 lagrange_evals_r_2[lagrange_index * 3 + 1] * accumulators_chunk[5];
 
-            // Los últimos 3 elementos: u2 = inf
+            // The last 3 elements: u2 = inf
             round_poly_evals[0] +=
                 lagrange_evals_r_2[lagrange_index * 3 + 2] * accumulators_chunk[6];
             round_poly_evals[1] +=

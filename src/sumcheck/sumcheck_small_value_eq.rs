@@ -34,8 +34,7 @@ fn precompute_e_out<F: Field>(w: &MultilinearPoint<F>) -> [Vec<F>; NUM_OF_ROUNDS
     })
 }
 
-/// Reorders the polynomial evaluations to improve cache locality.
-///
+/// Optimization: Transpose the polynomial to improve cache locality.
 /// Instead of the original layout, this function groups the 8 values
 /// needed for each `compute_p_beta` call into contiguous blocks.
 fn transpose_poly_for_svo<F: Field>(
@@ -86,8 +85,7 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
-    // Optimization number 3: Transpose the polynomial to improve cache locality.
-    // 1 . Transpose the polynomial befoere entering the parallel loop.
+    // 1 . Transpose the polynomial before entering the parallel loop.
     let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
 
     // Parallelize the outer loop over `x_out`
@@ -210,10 +208,12 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
             local_accumulators.accumulate(2, 17, e_out_2 * temp_acc[17]);
 
             // beta_index = 18; b=(2,0,0);
+            local_accumulators.accumulate(0, 2, e0_0 * temp_acc[18]); // y=0<<1|0=0
             local_accumulators.accumulate(1, 6, e1_0 * temp_acc[18]); // y=0
             local_accumulators.accumulate(2, 18, e_out_2 * temp_acc[18]);
 
             // beta_index = 19; b=(2,0,1);
+            local_accumulators.accumulate(0, 2, e0_1 * temp_acc[19]); // y=0<<1|1=1
             local_accumulators.accumulate(1, 6, e1_1 * temp_acc[19]); // y=1
             local_accumulators.accumulate(2, 19, e_out_2 * temp_acc[19]);
 
@@ -221,10 +221,12 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
             local_accumulators.accumulate(2, 20, e_out_2 * temp_acc[20]);
 
             // beta_index = 21; b=(2,1,0);
+            local_accumulators.accumulate(0, 2, e0_2 * temp_acc[21]); // y=1<<1|0=2
             local_accumulators.accumulate(1, 7, e1_0 * temp_acc[21]); // y=0
             local_accumulators.accumulate(2, 21, e_out_2 * temp_acc[21]);
 
             // beta_index = 22; b=(2,1,1);
+            local_accumulators.accumulate(0, 2, e0_3 * temp_acc[22]); // y=1<<1|1=3
             local_accumulators.accumulate(1, 7, e1_1 * temp_acc[22]); // y=1
             local_accumulators.accumulate(2, 22, e_out_2 * temp_acc[22]);
 
@@ -266,7 +268,7 @@ pub fn eval_eq_in_hypercube<F: Field>(point: &Vec<F>) -> Vec<F> {
     evals
 }
 
-// Esta funcion es una copia de eval_eq() en poly/multilinear.rs
+// This function is a copy of eval_eq() in poly/multilinear.rs
 pub fn eval_eq_in_point<F: Field>(p: &[F], q: &[F]) -> F {
     let mut acc = F::ONE;
     for (&l, &r) in p.into_iter().zip(q) {
@@ -285,7 +287,7 @@ pub fn compute_linear_function<F: Field>(w: &[F], r: &[F]) -> [F; 2] {
     }
     let w_i = w.last().unwrap();
 
-    // Evaluacion de eq(w,X) en [eq(w,0),eq(w,1)]
+    // Evaluation of eq(w,X) in [eq(w,0),eq(w,1)]
     [const_eq * (F::ONE - *w_i), const_eq * *w_i]
 }
 
@@ -298,7 +300,8 @@ fn get_evals_from_l_and_t<F: Field>(l: &[F; 2], t: &[F]) -> [F; 2] {
 
 // Algorithm 6. Page 19.
 // Compute three sumcheck rounds using the small value optimizaition and split-eq accumulators.
-// It Returns the three challenges r_1, r_2, r_3(TODO: creo que debería devolver también los polys foldeados).
+// It Returns the three challenges r_1, r_2, r_3
+// (TODO: I think it should return also the folded polynomials).
 pub fn small_value_sumcheck_three_rounds_eq<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     poly: &EvaluationsList<F>,
@@ -339,7 +342,7 @@ where
         + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_1
         + round_poly_evals[0];
 
-    // 5. Compte R_2 = [L_0(r_1), L_1(r_1), L_inf(r_1)]
+    // 5. Compute R_2 = [L_0(r_1), L_1(r_1), L_inf(r_1)]
     // L_0 (x) = 1 - x
     // L_1 (x) = x
     // L_inf (x) = (x - 1)x
@@ -360,7 +363,7 @@ where
     t_2_evals[1] += lagrange_evals_r_1[0] * accumulators_round_2[1];
     t_2_evals[1] += lagrange_evals_r_1[1] * accumulators_round_2[4];
 
-    // We compute l_2(0) and l_12inf)
+    // We compute l_2(0) and l_2(inf)
     let linear_2_evals = compute_linear_function(&w.0[..2], &[r_1]);
 
     // We compute S_2(u)
@@ -368,7 +371,7 @@ where
     // debug_assert!(round_poly_evals[2]);
 
     // 3. Send S_2(u) to the verifier.
-    // TODO: En realidad no hace falta mandar S_2(1) porque se deduce usando S_2(0).
+    // TODO: It is not necessary to send S_2(1) because it is deduced using S_2(0).
     prover_state.add_extension_scalars(&round_poly_evals);
 
     // 4. Receive the challenge r_2 from the verifier.
@@ -424,7 +427,7 @@ where
     let round_poly_evals = get_evals_from_l_and_t(&linear_3_evals, &t_3_evals);
 
     // 3. Send S_3(u) to the verifier.
-    // TODO: En realidad no hace falta mandar S_3(1) porque se dedecue usando S_3(0).
+    // TODO: It is not necessary to send S_3(1) because it is deduced using S_3(0).
     prover_state.add_extension_scalars(&round_poly_evals);
 
     let r_3: EF = prover_state.sample();
@@ -488,10 +491,8 @@ where
     EvaluationsList::new(folded_evals_flat)
 }
 
-// PHASE 2 - TRANSITION ROUND (ℓ₀ + 1): Explicit implementation of Algorithm 2's logic.
-///
-/// Purpose: Executes a single round to transition from the SVO phase to the final phase.
-///
+// PHASE 2 - TRANSITION ROUND (l_0 + 1):
+/// Executes a single round to transition from the SVO phase to the final phase.
 pub(crate) fn run_transition_round_algo2<Challenger, F, EF>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     evals_base: &EvaluationsList<F>,
@@ -500,7 +501,7 @@ pub(crate) fn run_transition_round_algo2<Challenger, F, EF>(
     sum: &mut EF,
     pow_bits: usize,
 ) -> (
-    EF,                  // New challenge r_{ℓ₀+1}
+    EF,                  // New challenge r_{l_0+1}
     EvaluationsList<EF>, // Folded evaluations for the next phase
     EvaluationsList<EF>, // Folded weights for the next phase
 )
@@ -509,11 +510,10 @@ where
     EF: TwoAdicField + ExtensionField<F>,
     Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
 {
-    // Step 1: Materialize the folded evaluation tables from scratch, as per Algorithm 2.
     let mut folded_evals = fold_evals_with_challenges(evals_base, svo_challenges);
     let mut folded_weights = fold_evals_with_challenges(weights_base, svo_challenges);
 
-    // Step 2: Run a standard sumcheck round on these newly computed tables.
+    // How much better would it be to follow strictly the algorithm 2?
     let sumcheck_poly = compute_sumcheck_polynomial(&folded_evals, &folded_weights, *sum);
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
@@ -524,13 +524,13 @@ where
     folded_evals.compress(r_transition);
     folded_weights.compress(r_transition);
 
-    // Update the sum and return everything needed for the next phase.
+    // Update the sum
     *sum = sumcheck_poly.evaluate_on_standard_domain(&MultilinearPoint::new(vec![r_transition]));
 
     (r_transition, folded_evals, folded_weights)
 }
 
-/// PHASE 3 - FINAL ROUNDS (ℓ₀ + 2 to ℓ): Explicit implementation of Algorithm 5's logic.
+/// PHASE 3 - FINAL ROUNDS (l_0 + 2 to l): Explicit implementation of Algorithm 5's logic.
 ///
 /// Purpose: Executes a standard sumcheck round on tables that have already been folded.
 ///
@@ -546,11 +546,6 @@ where
     EF: ExtensionField<F>,
     Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
 {
-    // Initialization part comes as parameter for the function
-
-    //
-
-    // This is the logic for the standard linear-time sumcheck prover.
     let sumcheck_poly = compute_sumcheck_polynomial(folded_evals, folded_weights, *sum);
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
@@ -558,7 +553,6 @@ where
     prover_state.pow_grinding(pow_bits);
     let r: EF = prover_state.sample();
 
-    // This is the key step corresponding to Step 5 of Algorithm 5: update arrays.
     folded_evals.compress(r);
     folded_weights.compress(r);
 
@@ -799,7 +793,6 @@ mod tests {
             .zip(eq_w3_w4.iter())
             .map(|(sum, eq)| sum * *eq)
             .sum::<EF>();
-
         assert_eq!(
             expected_accumulator,
             accumulators.get_accumulators_for_round(2)[0]

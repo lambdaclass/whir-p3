@@ -445,7 +445,7 @@ where
 /// This function takes a list of evaluations and "folds" or "compresses" them according
 /// to the provided challenges `r_1, ..., r_{k}`. The result is a new evaluation table
 /// representing p(r_1, ..., r_{k}, x'). This is the core mechanic for the transition.
-///
+
 fn fold_evals_with_challenges<Base, Target>(
     evals: &EvaluationsList<Base>,
     challenges: &[Target],

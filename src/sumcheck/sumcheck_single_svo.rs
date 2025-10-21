@@ -48,7 +48,7 @@ where
         challenges.push(r_2);
         challenges.push(r_3);
 
-        // --- PHASE 2: The Transition Round (Round l_0 + 1) ---
+        //Transition Round: l_0 + 1
 
         let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
             prover_state,
@@ -60,7 +60,7 @@ where
         );
         challenges.push(r_transition);
 
-        // --- PHASE 3: Standard Linear-Time Final Rounds (Rounds l_0 + 2 to l) ---
+        // Final Rounds: l_0 + 2 to l
 
         for _ in (NUM_SVO_ROUNDS + 1)..folding_factor {
             let r_final = run_final_round_algo5(

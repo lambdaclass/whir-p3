@@ -34,9 +34,8 @@ fn precompute_e_out<F: Field>(w: &MultilinearPoint<F>) -> [Vec<F>; NUM_OF_ROUNDS
     })
 }
 
-/// Optimization: Transpose the polynomial to improve cache locality.
-/// Instead of the original layout, this function groups the 8 values
-/// needed for each `compute_p_beta` call into contiguous blocks.
+/// Transposes the polynomial so each `compute_p_beta` call reads a contiguous block of eight values.
+/// (This is a performance optimization)
 fn transpose_poly_for_svo<F: Field>(
     poly: &EvaluationsList<F>,
     num_variables: usize,
@@ -85,24 +84,22 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
     let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
-    // 1 . Transpose the polynomial before entering the parallel loop.
+    // Transpose once so the parallel loop reads contiguous blocks.
     let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
 
-    // Parallelize the outer loop over `x_out`
+    // Iterate over x_out in parallel.
     (0..1 << x_out_num_variables)
         .into_par_iter()
         .map(|x_out| {
-            // Each thread will compute its own set of local accumulators.
-            // This avoids mutable state sharing and the need for locks.
+            // Each thread keeps its own accumulators to avoid shared mutable state.
             let mut local_accumulators = Accumulators::<EF>::new_empty();
 
-            // This inner part remains the same, but operates on local variables.
             let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
             let mut p_evals_buffer = [F::ZERO; 27];
             let num_x_in = 1 << half_l;
 
             for x_in in 0..num_x_in {
-                // 2. Read a contiguous block instead of jumping through memory.
+                // Read the contiguous block for this (x_out, x_in).
                 let block_start = (x_out * num_x_in + x_in) * 8;
                 let current_evals_arr: [F; 8] = transposed_poly[block_start..block_start + 8]
                     .try_into()
@@ -118,20 +115,17 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
                 }
             }
 
-            // hardcoded accumulator distribution
-            // This now populates the `local_accumulators` for this specific `x_out`.
+            // Hardcoded accumulator distribution.
             let temp_acc = &temp_accumulators;
             let e_out_2 = e_out[2][x_out];
 
-            // Pre-fetch e_out values to avoid repeated indexing and allocations.
+            // Cache e_out values for the current x_out.
             let e0_0 = e_out[0][(0 << x_out_num_variables) | x_out];
             let e0_1 = e_out[0][(1 << x_out_num_variables) | x_out];
             let e0_2 = e_out[0][(2 << x_out_num_variables) | x_out];
             let e0_3 = e_out[0][(3 << x_out_num_variables) | x_out];
             let e1_0 = e_out[1][(0 << x_out_num_variables) | x_out];
             let e1_1 = e_out[1][(1 << x_out_num_variables) | x_out];
-
-            // Now we do not use the idx4 function since we are directly computing the indices.
 
             // beta_index = 0; b=(0,0,0);
             local_accumulators.accumulate(0, 0, e0_0 * temp_acc[0]); // y=0<<1|0=0
@@ -243,11 +237,9 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
 
             // beta_index = 26; b=(2,2,2);
             local_accumulators.accumulate(2, 26, e_out_2 * temp_acc[26]);
-
-            // Return the computed local accumulators for this thread.
             local_accumulators
         })
-        // Reduce the results from all threads into a single Accumulators struct.
+        // Combine the per-thread results.
         .reduce(
             || Accumulators::<EF>::new_empty(),
             |mut a, b| {
@@ -459,17 +451,8 @@ where
     let num_remaining_evals = 1 << remaining_vars;
 
     let eq_table: Vec<Target> = {
-        let mut table = vec![Target::ONE; 1 << num_challenges];
-        for (k, r_k) in challenges.iter().enumerate() {
-            let bit_index = num_challenges - 1 - k;
-            for (j, val) in table.iter_mut().enumerate() {
-                if (j >> bit_index) & 1 == 1 {
-                    *val *= *r_k;
-                } else {
-                    *val *= Target::ONE - *r_k;
-                }
-            }
-        }
+        let mut table = vec![Target::ZERO; 1 << num_challenges];
+        eval_eq::<_, _, false>(challenges, &mut table, Target::ONE);
         table
     };
 
@@ -491,7 +474,7 @@ where
     EvaluationsList::new(folded_evals_flat)
 }
 
-// PHASE 2 - TRANSITION ROUND (l_0 + 1):
+/// TRANSITION ROUND (l_0 + 1):
 /// Executes a single round to transition from the SVO phase to the final phase.
 pub(crate) fn run_transition_round_algo2<Challenger, F, EF>(
     prover_state: &mut ProverState<F, EF, Challenger>,
@@ -530,9 +513,9 @@ where
     (r_transition, folded_evals, folded_weights)
 }
 
-/// PHASE 3 - FINAL ROUNDS (l_0 + 2 to l): Explicit implementation of Algorithm 5's logic.
+/// FINAL ROUNDS (l_0 + 2 to l): Explicit implementation of Algorithm 5's logic.
 ///
-/// Purpose: Executes a standard sumcheck round on tables that have already been folded.
+/// Executes a standard sumcheck round on tables that have already been folded.
 ///
 pub(crate) fn run_final_round_algo5<Challenger, F, EF>(
     prover_state: &mut ProverState<F, EF, Challenger>,

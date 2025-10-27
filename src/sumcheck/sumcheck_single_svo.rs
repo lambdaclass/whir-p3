@@ -42,13 +42,14 @@ where
         // We assume the the statement has only one constraint.
         let w = statement.constraints[0].point.0.clone();
 
+        // First three rounds of sumcheck.
         let (r_1, r_2, r_3) =
             small_value_sumcheck_three_rounds_eq(prover_state, evals, &w, &mut sum);
         challenges.push(r_1);
         challenges.push(r_2);
         challenges.push(r_3);
 
-        //Transition Round: l_0 + 1
+        // Transition Round: l_0 + 1
 
         let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
             prover_state,

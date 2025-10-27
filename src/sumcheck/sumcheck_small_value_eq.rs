@@ -299,8 +299,8 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
     debug_assert!(num_vars_x_r == half_l + (num_vars % 2));
 
     // Loop for the final rounds, from l_0+1 (in our case 4) to the end.
-    // TODO: Once we have the algorithm 2, this loop should start at 5 (l_0 + 2).
-    for i in 4..num_vars + 1 {
+    let current_round = challenges.len() + 1;
+    for i in current_round..num_vars + 1 {
         let mut t = Vec::new();
 
         // We get the number of variables of `poly` in the current round.
@@ -359,7 +359,7 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
 
         // We compute S_i(u)
         let round_poly_evals = get_evals_from_l_and_t(&linear_evals, &t);
-
+        
         // 3. Send S_i(u) to the verifier.
         prover_state.add_extension_scalars(&round_poly_evals);
 
@@ -378,12 +378,12 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
     }
 }
 
-fn algorithm_2<Challenger, F: Field, EF: ExtensionField<F>>(
+pub fn algorithm_2<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     poly: &EvaluationsList<F>,
     w: &MultilinearPoint<EF>,
     sum: &mut EF,
-    challenges: Vec<EF>,
+    challenges: &mut Vec<EF>,
 ) -> Vec<EF> 
 where
     Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
@@ -435,7 +435,7 @@ where
                     .iter()
                     .skip(start)
                     .step_by(step)
-                    .zip(eq.iter().skip(start + 1 << l - 4).step_by(step))
+                    .zip(eq.iter().skip(start + (1 << l - 4)).step_by(step))
                     .map(|(eq_zero, eq_one)| *eq_one - *eq_zero)
                     .take(8)
                     .collect();
@@ -444,7 +444,7 @@ where
 
                 let p_one: EF = poly
                     .iter()
-                    .skip(start + 1 << l - 4)
+                    .skip(start + (1 << l - 4))
                     .step_by(step)
                     .zip(eq_r.iter())
                     .map(|(a, b)| *b * *a)
@@ -461,7 +461,16 @@ where
             })
             .sum();
 
-    prover_state.add_extension_scalars(&[eval_zero, eval_inf]); 
+    prover_state.add_extension_scalars(&[eval_zero, eval_inf]);
+
+    // Update the claimed sum: S_4(r_4).
+    let r_4: EF = prover_state.sample();
+    challenges.push(r_4);
+
+    let eval_1 = *sum - eval_zero;
+    *sum = eval_inf * r_4.square()
+        + (eval_1 - eval_zero - eval_inf) * r_4
+        + eval_zero;
     
     folded_poly
 }

@@ -384,7 +384,7 @@ fn run_sumcheck_test_svo(folding_factors: &[usize], num_points: &[usize]) {
     // ROUND 0
     let folding = folding_factors[0];
     let (mut sumcheck, mut prover_randomness) =
-        SumcheckSingle::from_base_evals_svo_2(&poly, &statement, alpha, prover, folding, 0);
+        SumcheckSingle::from_base_evals_svo_3(&poly, &statement, alpha, prover, folding, 0);
 
     // Track how many variables remain to fold
     let mut num_vars_inter = num_vars - folding;
@@ -425,6 +425,8 @@ fn run_sumcheck_test_svo(folding_factors: &[usize], num_points: &[usize]) {
 
     // Final folded value must match f(r)
     let final_folded_value = sumcheck.evals.as_constant().unwrap();
+
+    println!("EVALUATIONS: {} - FINAL_FOLDED: {}", poly.evaluate(&prover_randomness), final_folded_value);
 
     assert_eq!(poly.evaluate(&prover_randomness), final_folded_value);
     prover.add_extension_scalar(final_folded_value);

@@ -8,7 +8,7 @@ use crate::{
     sumcheck::{
         sumcheck_single::{SumcheckSingle, compute_sumcheck_polynomial},
         sumcheck_single_skip::compute_skipping_sumcheck_polynomial,
-        sumcheck_small_value_eq::{algorithm_5, small_value_sumcheck_three_rounds_eq},
+        sumcheck_small_value_eq::{algorithm_5, algorithm_2, small_value_sumcheck_three_rounds_eq},
         utils::sumcheck_quadratic,
     },
     whir::statement::Statement,
@@ -116,6 +116,52 @@ where
     // - SVO for the first three rounds.
     // - Algorithm 5 for the remaining rounds.
     pub fn from_base_evals_svo_2<Challenger>(
+        evals: &EvaluationsList<F>,
+        statement: &Statement<EF>,
+        combination_randomness: EF,
+        prover_state: &mut ProverState<F, EF, Challenger>,
+        folding_factor: usize,
+        pow_bits: usize,
+    ) -> (Self, MultilinearPoint<EF>)
+    where
+        F: TwoAdicField,
+        EF: TwoAdicField,
+        Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        assert_ne!(folding_factor, 0);
+        let mut challenges = Vec::with_capacity(folding_factor);
+
+        let (mut weights, mut sum) = statement.combine::<F>(combination_randomness);
+
+        // We assume the the statemas has only one constraint.
+        let w = statement.constraints[0].point.0.clone();
+
+        let (r_1, r_2, r_3) =
+            small_value_sumcheck_three_rounds_eq(prover_state, evals, &w, &mut sum);
+        challenges.push(r_1);
+        challenges.push(r_2);
+        challenges.push(r_3);
+
+        let folded_poly = algorithm_2(prover_state, &evals, &w, &mut sum, &mut challenges);
+
+        let mut evals: EvaluationsList<EF> = EvaluationsList::new(folded_poly);
+
+        // Fix the fourth variable at r_4.
+        evals.compress_svo(challenges[3]);
+
+        algorithm_5(prover_state, &mut evals, &w, &mut challenges, &mut sum);
+
+        // Final weight: eq(w, r).
+        weights = EvaluationsList::new(vec![w.eq_poly(&MultilinearPoint::new(challenges.clone()))]);
+
+        let sumcheck = Self::new(evals, weights, sum);
+
+        (sumcheck, MultilinearPoint::new(challenges))
+    }
+
+    // - SVO for the first three rounds.
+    // - Algorithm 5 for the remaining rounds.
+    pub fn from_base_evals_svo_3<Challenger>(
         evals: &EvaluationsList<F>,
         statement: &Statement<EF>,
         combination_randomness: EF,

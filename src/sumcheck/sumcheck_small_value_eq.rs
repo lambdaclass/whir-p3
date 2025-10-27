@@ -2,6 +2,7 @@ use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::small_value_utils::{Accumulators, compute_p_beta, idx4_v2, to_base_three_coeff},
+    whir::prover,
 };
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field};
@@ -272,11 +273,95 @@ where
         + (eval_1 - round_poly_evals[0] - round_poly_evals[1]) * r_3
         + round_poly_evals[0];
 
-    // Round l_0 + 1. Algorithm 5.
-    let eq_r = eval_eq_in_hypercube(&vec![r_1, r_2, r_3]);
-
-    println!("Eq_r: {:?}", eq_r);
     (r_1, r_2, r_3)
+}
+
+fn algorithm_2<Challenger, F: Field, EF: ExtensionField<F>>(
+    prover_state: &mut ProverState<F, EF, Challenger>,
+    poly: &EvaluationsList<F>,
+    w: &MultilinearPoint<EF>,
+    sum: &mut EF,
+    challenges: Vec<EF>,
+) -> Vec<EF> 
+where
+    Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+{
+    let l = poly.num_variables();
+    let eq = eval_eq_in_hypercube(&w.0);
+    let eq_r = eval_eq_in_hypercube(&challenges);
+
+    // l-4 debeeria sdr l - 3, pq tengo solo 3 randoms.?????????????
+    let mut folded_poly: Vec<EF> = Vec::with_capacity(1 << l - 4);
+
+    let eval_zero: EF = 
+        (0..1 << l - 4)
+            .map(|x| {
+                let start = x;
+                let step = 1 << l - 3;
+
+                let eq_sum: EF = eq
+                    .iter()
+                    .skip(start)
+                    .step_by(step)
+                    .zip(eq_r.iter())
+                    .map(|(a, b)| *a * *b)
+                    .take(8)
+                    .sum();
+
+                let p_sum: EF = poly
+                    .iter()
+                    .skip(start)
+                    .step_by(step)
+                    .zip(eq_r.iter())
+                    .map(|(a, b)| *b * *a)
+                    .take(8)
+                    .sum();
+
+                folded_poly.push(p_sum);
+
+                eq_sum * p_sum
+            })
+            .sum();
+
+    let eval_inf: EF = 
+        (0..1 << l - 4)
+            .map(|x| {
+                let start = x;
+                let step = 1 << l - 3;
+
+                let eq_inf: Vec<EF> = eq
+                    .iter()
+                    .skip(start)
+                    .step_by(step)
+                    .zip(eq.iter().skip(start + 1 << l - 4).step_by(step))
+                    .map(|(eq_zero, eq_one)| *eq_one - *eq_zero)
+                    .take(8)
+                    .collect();
+            
+                let eq_sum: EF = eq_inf.iter().zip(eq_r.iter()).map(|(a, b)| *b * *a).take(8).sum();
+
+                let p_one: EF = poly
+                    .iter()
+                    .skip(start + 1 << l - 4)
+                    .step_by(step)
+                    .zip(eq_r.iter())
+                    .map(|(a, b)| *b * *a)
+                    .take(8)
+                    .sum();
+
+                folded_poly.push(p_one);
+
+                let p_zero: EF = folded_poly[x];
+                        
+                let p_sum: EF = p_one - p_zero;
+
+                eq_sum * p_sum
+            })
+            .sum();
+
+    prover_state.add_extension_scalars(&[eval_zero, eval_inf]); 
+    
+    folded_poly
 }
 
 #[cfg(test)]

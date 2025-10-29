@@ -38,7 +38,7 @@ where
 {
     pub fn new_empty() -> Self {
         Accumulators {
-            accumulators: [vec![F::ZERO; 3], vec![F::ZERO; 9], vec![F::ZERO; 27]],
+            accumulators: [vec![F::ZERO; 2], vec![F::ZERO; 4], vec![F::ZERO; 8]],
         }
     }
 
@@ -154,13 +154,13 @@ pub fn compute_p_beta<F: Field>(current_evals: &[F; 8], next_evals: &mut [F; 27]
     next_evals[12] = current_evals[6]; // 110
     next_evals[13] = current_evals[7]; // 111
 
-    // j = 1
+    // Iteration j = 1 from the paper.
     next_evals[18] = next_evals[9] - next_evals[0]; // 200
     next_evals[19] = next_evals[10] - next_evals[1]; // 201
     next_evals[21] = next_evals[12] - next_evals[3]; // 210
     next_evals[22] = next_evals[13] - next_evals[4]; // 211
 
-    // j = 2
+    // Iteration j = 2 from the paper.
     next_evals[6] = next_evals[3] - next_evals[0]; // 020
     next_evals[7] = next_evals[4] - next_evals[1]; // 021
     next_evals[15] = next_evals[12] - next_evals[9]; // 120
@@ -168,7 +168,7 @@ pub fn compute_p_beta<F: Field>(current_evals: &[F; 8], next_evals: &mut [F; 27]
     next_evals[24] = next_evals[21] - next_evals[18]; // 220
     next_evals[25] = next_evals[22] - next_evals[19]; // 221
 
-    // j = 3
+    // Iteration j = 3 from the paper.
     next_evals[2] = next_evals[1] - next_evals[0]; // 002
     next_evals[5] = next_evals[4] - next_evals[3]; // 012
     next_evals[8] = next_evals[7] - next_evals[6]; // 022

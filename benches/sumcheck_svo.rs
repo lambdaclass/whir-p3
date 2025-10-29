@@ -52,7 +52,7 @@ fn bench_sumcheck_prover_svo(c: &mut Criterion) {
     let mut group = c.benchmark_group("SumcheckProver");
     group.sample_size(30);
 
-    for &num_vars in &[16, 18, 20] {
+    for &num_vars in &[18, 20, 22] {
         let poly = generate_poly(num_vars);
         let statement = generate_statement(num_vars, &poly, NUM_CONSTRAINTS);
 
@@ -83,7 +83,7 @@ fn bench_sumcheck_prover_svo(c: &mut Criterion) {
                 b.iter(|| {
                     let mut prover = setup_prover();
                     let combination_randomness: EF = prover.sample();
-                    let result = SumcheckSingle::from_base_evals_svo(
+                    let result = SumcheckSingle::from_base_evals_svo_2(
                         &poly,
                         &statement,
                         combination_randomness,

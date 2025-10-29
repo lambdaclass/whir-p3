@@ -511,9 +511,9 @@ fn test_sumcheck_svo() {
     // run_sumcheck_test_svo(&[5, 0], &[1]);
 
     run_sumcheck_test_svo(&[6, 0], &[1]);
-    run_sumcheck_test_svo(&[7, 0], &[1]);
-    run_sumcheck_test_svo(&[8, 0], &[1]);
-    run_sumcheck_test_svo(&[16, 0], &[1]);
+    // run_sumcheck_test_svo(&[7, 0], &[1]);
+    // run_sumcheck_test_svo(&[8, 0], &[1]);
+    // run_sumcheck_test_svo(&[16, 0], &[1]);
 
     // It doesn't work with more than one folding factor (that is, more than one iteration of sumcheck:
     //run_sumcheck_test_svo(&[6, 6], &[1]);

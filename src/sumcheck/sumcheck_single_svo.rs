@@ -8,7 +8,9 @@ use crate::{
     sumcheck::{
         sumcheck_single::{SumcheckSingle, compute_sumcheck_polynomial},
         sumcheck_single_skip::compute_skipping_sumcheck_polynomial,
-        sumcheck_small_value_eq::{algorithm_5, small_value_sumcheck_three_rounds_eq},
+        sumcheck_small_value_eq::{
+            algorithm_5, algorithm_5_v2, small_value_sumcheck_three_rounds_eq,
+        },
         utils::sumcheck_quadratic,
     },
     whir::statement::Statement,

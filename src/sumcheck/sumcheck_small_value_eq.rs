@@ -88,9 +88,10 @@ fn compute_accumulators_eq_old<F: Field, EF: ExtensionField<F>>(
     debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
 
     // Optimization number 3: Transpose the polynomial to improve cache locality.
-    // 1. Transpose the polynomial befoere entering the parallel loop.
+    // 1 . Transpose the polynomial befoere entering the parallel loop.
     let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
 
+    // Parallelize the outer loop over `x_out`
     (0..1 << x_out_num_variables)
         .into_par_iter()
         .map(|x_out| {
@@ -98,152 +99,149 @@ fn compute_accumulators_eq_old<F: Field, EF: ExtensionField<F>>(
             // This avoids mutable state sharing and the need for locks.
             let mut local_accumulators = Accumulators::<EF>::new_empty();
 
+            // This inner part remains the same, but operates on local variables.
             let mut temp_accumulators: Vec<EF> = vec![EF::ZERO; 27];
-            let mut p_evals = [F::ZERO; 27];
-
+            let mut p_evals_buffer = [F::ZERO; 27];
             let num_x_in = 1 << half_l;
+
             for x_in in 0..num_x_in {
-                // We collect the eight evaluations p(b_0, b_1, b_2, x_in, x_out) where
-                // x_in and x_out are fixed and b_0, b_1, b_2 are in {0,1}^3 (needed for compute_p_beta).
+                // 2. Read a contiguous block instead of jumping through memory.
                 let block_start = (x_out * num_x_in + x_in) * 8;
-                let current_evals: [F; 8] = transposed_poly[block_start..block_start + 8]
+                let current_evals_arr: [F; 8] = transposed_poly[block_start..block_start + 8]
                     .try_into()
                     .unwrap();
 
-                // We compute p(beta, x_in, x_out) for all beta in {0, 1, inf}^3
-                compute_p_beta(&current_evals, &mut p_evals);
+                compute_p_beta(&current_evals_arr, &mut p_evals_buffer);
                 let e_in_value = e_in[x_in];
 
-                for (accumulator, &p_eval) in temp_accumulators.iter_mut().zip(p_evals.iter()) {
+                for (accumulator, &p_eval) in
+                    temp_accumulators.iter_mut().zip(p_evals_buffer.iter())
+                {
                     *accumulator += e_in_value * p_eval;
                 }
             }
 
-            // Hardcoded accumulator distribution
-            // This populates the `local_accumulators` for this specific `x_out`.
+            // hardcoded accumulator distribution
+            // This now populates the `local_accumulators` for this specific `x_out`.
             let temp_acc = &temp_accumulators;
+            let e_out_2 = e_out[2][x_out];
 
             // Pre-fetch e_out values to avoid repeated indexing and allocations.
-
-            // e_out for round i = 0: y in {0,1}^2.
-            let e0_0 = e_out[0][(0 << x_out_num_variables) | x_out]; // e_out_0(0,0, x_out)
-            let e0_1 = e_out[0][(1 << x_out_num_variables) | x_out]; // e_out_0(0,1, x_out)
-            let e0_2 = e_out[0][(2 << x_out_num_variables) | x_out]; // e_out_0(1,0, x_out)
-            let e0_3 = e_out[0][(3 << x_out_num_variables) | x_out]; // e_out_0(1,1, x_out)
-            // e_out for round i = 1: y in {0,1}.
-            let e1_0 = e_out[1][(0 << x_out_num_variables) | x_out]; // e_out_1(0, x_out)
-            let e1_1 = e_out[1][(1 << x_out_num_variables) | x_out]; // e_out_1(1, x_out)
-            // e_out for round i = 2: there is no y.
-            let e_out_2 = e_out[2][x_out]; // e_out_2(x_out)
+            let e0_0 = e_out[0][(0 << x_out_num_variables) | x_out];
+            let e0_1 = e_out[0][(1 << x_out_num_variables) | x_out];
+            let e0_2 = e_out[0][(2 << x_out_num_variables) | x_out];
+            let e0_3 = e_out[0][(3 << x_out_num_variables) | x_out];
+            let e1_0 = e_out[1][(0 << x_out_num_variables) | x_out];
+            let e1_1 = e_out[1][(1 << x_out_num_variables) | x_out];
 
             // Now we do not use the idx4 function since we are directly computing the indices.
 
-            // beta_index = 0; beta = (0,0,0);
-            local_accumulators.accumulate(0, 0, e0_0 * temp_acc[0]); // y = 00, u = 0
-            local_accumulators.accumulate(1, 0, e1_0 * temp_acc[0]); // y = 0, v = 0, u = 0
-            local_accumulators.accumulate(2, 0, e_out_2 * temp_acc[0]); // v = 00, u = 0
+            // beta_index = 0; b=(0,0,0);
+            local_accumulators.accumulate(0, 0, e0_0 * temp_acc[0]); // y=0<<1|0=0
+            local_accumulators.accumulate(1, 0, e1_0 * temp_acc[0]); // y=0
+            local_accumulators.accumulate(2, 0, e_out_2 * temp_acc[0]);
 
-            // beta_index = 1; beta =(0,0,1);
-            local_accumulators.accumulate(0, 0, e0_1 * temp_acc[1]); // y = 10, u = 0
-            local_accumulators.accumulate(1, 0, e1_1 * temp_acc[1]); // y = 1, v = 0, u = 0
-            local_accumulators.accumulate(2, 1, e_out_2 * temp_acc[1]); // v = 10, u = 0
+            // beta_index = 1; b=(0,0,1);
+            local_accumulators.accumulate(0, 0, e0_1 * temp_acc[1]); // y=0<<1|1=1
+            local_accumulators.accumulate(1, 0, e1_1 * temp_acc[1]); // y=1
+            local_accumulators.accumulate(2, 1, e_out_2 * temp_acc[1]);
 
-            // // beta_index = 2; b=(0,0,2);
-            // local_accumulators.accumulate(2, 2, e_out_2 * temp_acc[2]); // v = 20, u = 0
+            // beta_index = 2; b=(0,0,2);
+            local_accumulators.accumulate(2, 2, e_out_2 * temp_acc[2]);
 
-            // beta_index = 3; beta = (0,1,0);
-            local_accumulators.accumulate(0, 0, e0_2 * temp_acc[3]); // y = 01, u = 0
-            local_accumulators.accumulate(1, 1, e1_0 * temp_acc[3]); // y = 0, v = 1, u = 0
-            local_accumulators.accumulate(2, 3, e_out_2 * temp_acc[3]); // v = 01, u = 0
+            // beta_index = 3; b=(0,1,0);
+            local_accumulators.accumulate(0, 0, e0_2 * temp_acc[3]); // y=1<<1|0=2
+            local_accumulators.accumulate(1, 1, e1_0 * temp_acc[3]); // y=0
+            local_accumulators.accumulate(2, 3, e_out_2 * temp_acc[3]);
 
-            // beta_index = 4; beta = (0,1,1);
-            local_accumulators.accumulate(0, 0, e0_3 * temp_acc[4]); // y = 11, u = 0
-            local_accumulators.accumulate(1, 1, e1_1 * temp_acc[4]); // y = 1, v = 1, u = 0
-            local_accumulators.accumulate(2, 4, e_out_2 * temp_acc[4]); // v = 11, u = 0
+            // beta_index = 4; b=(0,1,1);
+            local_accumulators.accumulate(0, 0, e0_3 * temp_acc[4]); // y=1<<1|1=3
+            local_accumulators.accumulate(1, 1, e1_1 * temp_acc[4]); // y=1
+            local_accumulators.accumulate(2, 4, e_out_2 * temp_acc[4]);
 
-            // // beta_index = 5; b=(0,1,2);
-            // local_accumulators.accumulate(2, 5, e_out_2 * temp_acc[5]); // v = 21, u = 0
+            // beta_index = 5; b=(0,1,2);
+            local_accumulators.accumulate(2, 5, e_out_2 * temp_acc[5]);
 
-            // // beta_index = 6; b=(0,2,0);
-            // local_accumulators.accumulate(1, 2, e1_0 * temp_acc[6]); // y = 0, v = 2, u = 0
-            // local_accumulators.accumulate(2, 6, e_out_2 * temp_acc[6]); // v = 02, u = 0
+            // beta_index = 6; b=(0,2,0);
+            local_accumulators.accumulate(1, 2, e1_0 * temp_acc[6]); // y=0
+            local_accumulators.accumulate(2, 6, e_out_2 * temp_acc[6]);
 
-            // // beta_index = 7; b=(0,2,1);
-            // local_accumulators.accumulate(1, 2, e1_1 * temp_acc[7]);
-            // local_accumulators.accumulate(2, 7, e_out_2 * temp_acc[7]);
+            // beta_index = 7; b=(0,2,1);
+            local_accumulators.accumulate(1, 2, e1_1 * temp_acc[7]); // y=1
+            local_accumulators.accumulate(2, 7, e_out_2 * temp_acc[7]);
 
-            // // beta_index = 8; b=(0,2,2);
-            // local_accumulators.accumulate(2, 8, e_out_2 * temp_acc[8]);
+            // beta_index = 8; b=(0,2,2);
+            local_accumulators.accumulate(2, 8, e_out_2 * temp_acc[8]);
 
-            // beta_index = 9; beta = (1,0,0);
-            local_accumulators.accumulate(0, 1, e0_0 * temp_acc[9]); // y = 00, u = 1
-            local_accumulators.accumulate(1, 3, e1_0 * temp_acc[9]); // y = 0, v = 0, u = 1
-            local_accumulators.accumulate(2, 9, e_out_2 * temp_acc[9]); // v = 00, u = 1
+            // beta_index = 9; b=(1,0,0);
+            local_accumulators.accumulate(0, 1, e0_0 * temp_acc[9]); // y=0<<1|0=0
+            local_accumulators.accumulate(1, 3, e1_0 * temp_acc[9]); // y=0
+            local_accumulators.accumulate(2, 9, e_out_2 * temp_acc[9]);
 
-            // beta_index = 10; beta =(1,0,1);
-            local_accumulators.accumulate(0, 1, e0_1 * temp_acc[10]); // y = 10, u = 1
-            local_accumulators.accumulate(1, 3, e1_1 * temp_acc[10]); // y = 1, v = 0, u = 1
-            local_accumulators.accumulate(2, 10, e_out_2 * temp_acc[10]); // v = 10, u = 1
+            // beta_index = 10; b=(1,0,1);
+            local_accumulators.accumulate(0, 1, e0_1 * temp_acc[10]); // y=0<<1|1=1
+            local_accumulators.accumulate(1, 3, e1_1 * temp_acc[10]); // y=1
+            local_accumulators.accumulate(2, 10, e_out_2 * temp_acc[10]);
 
-            // // beta_index = 11; b=(1,0,2);
-            // local_accumulators.accumulate(2, 11, e_out_2 * temp_acc[11]);
+            // beta_index = 11; b=(1,0,2);
+            local_accumulators.accumulate(2, 11, e_out_2 * temp_acc[11]);
 
-            // beta_index = 12; beta = (1,1,0);
-            local_accumulators.accumulate(0, 1, e0_2 * temp_acc[12]); // y = 01, u = 1
-            local_accumulators.accumulate(1, 4, e1_0 * temp_acc[12]); // y = 0, v = 1, u = 1
-            local_accumulators.accumulate(2, 12, e_out_2 * temp_acc[12]); // v = 01, u = 1
+            // beta_index = 12; b=(1,1,0);
+            local_accumulators.accumulate(0, 1, e0_2 * temp_acc[12]); // y=1<<1|0=2
+            local_accumulators.accumulate(1, 4, e1_0 * temp_acc[12]); // y=0
+            local_accumulators.accumulate(2, 12, e_out_2 * temp_acc[12]);
 
-            // beta_index = 13; beta = (1,1,1);
-            local_accumulators.accumulate(0, 1, e0_3 * temp_acc[13]); // y = 11, u = 1
-            local_accumulators.accumulate(1, 4, e1_1 * temp_acc[13]); // y = 1, v = 1, u = 1
-            local_accumulators.accumulate(2, 13, e_out_2 * temp_acc[13]); // v = 11, u = 1
+            // beta_index = 13; b=(1,1,1);
+            local_accumulators.accumulate(0, 1, e0_3 * temp_acc[13]); // y=1<<1|1=3
+            local_accumulators.accumulate(1, 4, e1_1 * temp_acc[13]); // y=1
+            local_accumulators.accumulate(2, 13, e_out_2 * temp_acc[13]);
 
-            // // beta_index = 14; b=(1,1,2);
-            // local_accumulators.accumulate(2, 14, e_out_2 * temp_acc[14]);
+            // beta_index = 14; b=(1,1,2);
+            local_accumulators.accumulate(2, 14, e_out_2 * temp_acc[14]);
 
-            // // beta_index = 15; b=(1,2,0);
-            // local_accumulators.accumulate(1, 5, e1_0 * temp_acc[15]);
-            // local_accumulators.accumulate(2, 15, e_out_2 * temp_acc[15]);
+            // beta_index = 15; b=(1,2,0);
+            local_accumulators.accumulate(1, 5, e1_0 * temp_acc[15]); // y=0
+            local_accumulators.accumulate(2, 15, e_out_2 * temp_acc[15]);
 
-            // // beta_index = 16; b=(1,2,1);
-            // local_accumulators.accumulate(1, 5, e1_1 * temp_acc[16]);
-            // local_accumulators.accumulate(2, 16, e_out_2 * temp_acc[16]);
+            // beta_index = 16; b=(1,2,1);
+            local_accumulators.accumulate(1, 5, e1_1 * temp_acc[16]); // y=1
+            local_accumulators.accumulate(2, 16, e_out_2 * temp_acc[16]);
 
-            // // beta_index = 17; b=(1,2,2);
-            // local_accumulators.accumulate(2, 17, e_out_2 * temp_acc[17]);
+            // beta_index = 17; b=(1,2,2);
+            local_accumulators.accumulate(2, 17, e_out_2 * temp_acc[17]);
 
-            // // beta_index = 18; b=(2,0,0);
-            // local_accumulators.accumulate(1, 6, e1_0 * temp_acc[18]);
-            // local_accumulators.accumulate(2, 18, e_out_2 * temp_acc[18]);
+            // beta_index = 18; b=(2,0,0);
+            local_accumulators.accumulate(1, 6, e1_0 * temp_acc[18]); // y=0
+            local_accumulators.accumulate(2, 18, e_out_2 * temp_acc[18]);
 
-            // // beta_index = 19; b=(2,0,1);
-            // local_accumulators.accumulate(1, 6, e1_1 * temp_acc[19]);
-            // local_accumulators.accumulate(2, 19, e_out_2 * temp_acc[19]);
+            // beta_index = 19; b=(2,0,1);
+            local_accumulators.accumulate(1, 6, e1_1 * temp_acc[19]); // y=1
+            local_accumulators.accumulate(2, 19, e_out_2 * temp_acc[19]);
 
-            // // beta_index = 20; b=(2,0,2);
-            // local_accumulators.accumulate(2, 20, e_out_2 * temp_acc[20]);
+            // beta_index = 20; b=(2,0,2);
+            local_accumulators.accumulate(2, 20, e_out_2 * temp_acc[20]);
 
-            // // beta_index = 21; b=(2,1,0);
-            // local_accumulators.accumulate(1, 7, e1_0 * temp_acc[21]);
-            // local_accumulators.accumulate(2, 21, e_out_2 * temp_acc[21]);
+            // beta_index = 21; b=(2,1,0);
+            local_accumulators.accumulate(1, 7, e1_0 * temp_acc[21]); // y=0
+            local_accumulators.accumulate(2, 21, e_out_2 * temp_acc[21]);
 
-            // // beta_index = 22; b=(2,1,1);
-            // local_accumulators.accumulate(1, 7, e1_1 * temp_acc[22]);
-            // local_accumulators.accumulate(2, 22, e_out_2 * temp_acc[22]);
+            // beta_index = 22; b=(2,1,1);
+            local_accumulators.accumulate(1, 7, e1_1 * temp_acc[22]); // y=1
+            local_accumulators.accumulate(2, 22, e_out_2 * temp_acc[22]);
 
-            // // beta_index = 23; b=(2,1,2);
-            // local_accumulators.accumulate(2, 23, e_out_2 * temp_acc[23]);
+            // beta_index = 23; b=(2,1,2);
+            local_accumulators.accumulate(2, 23, e_out_2 * temp_acc[23]);
 
-            // // beta_index = 24; b=(2,2,0);
-            // local_accumulators.accumulate(1, 8, e1_0 * temp_acc[24]);
-            // local_accumulators.accumulate(2, 24, e_out_2 * temp_acc[24]);
+            // beta_index = 24; b=(2,2,0);
+            local_accumulators.accumulate(1, 8, e1_0 * temp_acc[24]); // y=0
+            local_accumulators.accumulate(2, 24, e_out_2 * temp_acc[24]);
 
-            // // beta_index = 25; b=(2,2,1);
-            // local_accumulators.accumulate(1, 8, e1_1 * temp_acc[25]); // y = 1, v = 2, u = 2
-            // local_accumulators.accumulate(2, 25, e_out_2 * temp_acc[25]); // v = 12, u = 2
+            // beta_index = 25; b=(2,2,1);
+            local_accumulators.accumulate(1, 8, e1_1 * temp_acc[25]); // y=1
+            local_accumulators.accumulate(2, 25, e_out_2 * temp_acc[25]);
 
-            // // beta_index = 26; b=(2,2,2);
-            // local_accumulators.accumulate(2, 26, e_out_2 * temp_acc[26]); // v = 22, u = 2
+            // beta_index = 26; b=(2,2,2);
+            local_accumulators.accumulate(2, 26, e_out_2 * temp_acc[26]);
 
             // Return the computed local accumulators for this thread.
             local_accumulators
@@ -277,10 +275,6 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
 
     let poly_evals = poly.as_slice();
 
-    // // Optimization number 3: Transpose the polynomial to improve cache locality.
-    // // 1. Transpose the polynomial befoere entering the parallel loop.
-    // let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
-
     (0..1 << x_out_num_vars)
         .into_par_iter()
         .map(|x_out| {
@@ -290,42 +284,17 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
 
             let mut temp_accumulators = [EF::ZERO; 8];
 
-            //let mut p_evals = [F::ZERO; 27];
-
             let num_x_in = 1 << half_l;
 
             for x_in in 0..num_x_in {
                 let e_in_value = e_in[x_in];
 
-                // // TODO: cambiarlo a algo asi.
-                // (0..8).into_par_iter().map(|i| {
-                //     let beta = i << x_num_vars;
-                //     let index = beta | (x_in << x_out_num_vars) | x_out;
-                //     temp_accumulators[i] = e_in_value * poly_evals[index]
-                // });
-
-                temp_accumulators[0] += e_in_value * poly_evals[(x_in << x_out_num_vars) | x_out]; // 000 | x_in | x_out
-
-                temp_accumulators[1] +=
-                    e_in_value * poly_evals[(1 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 001 | x_in | x_out
-
-                temp_accumulators[2] +=
-                    e_in_value * poly_evals[(2 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 010 | x_in | x_out
-
-                temp_accumulators[3] +=
-                    e_in_value * poly_evals[(3 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 011 | x_in | x_out
-
-                temp_accumulators[4] +=
-                    e_in_value * poly_evals[(4 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 100 | x_in | x_out
-
-                temp_accumulators[5] +=
-                    e_in_value * poly_evals[(5 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 101 | x_in | x_out
-
-                temp_accumulators[6] +=
-                    e_in_value * poly_evals[(6 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 110 | x_in | x_out
-
-                temp_accumulators[7] +=
-                    e_in_value * poly_evals[(7 << x_num_vars) | (x_in << x_out_num_vars) | x_out]; // 111 | x_in | x_out
+                // For each beta in {0,1}^3, we update tA(beta) += e_in[x_in] * p(beta, x_in, x_out)
+                for i in 0..8 {
+                    let beta = i << x_num_vars;
+                    let index = beta | (x_in << x_out_num_vars) | x_out; // beta | x_in | x_out
+                    temp_accumulators[i] += e_in_value * poly_evals[index]; // += e_in[x_in] * p(beta, x_in, x_out)
+                }
             }
 
             // Hardcoded accumulator distribution
@@ -335,57 +304,61 @@ fn compute_accumulators_eq<F: Field, EF: ExtensionField<F>>(
             // Pre-fetch e_out values to avoid repeated indexing and allocations.
 
             // e_out for round i = 0: y in {0,1}^2.
-            let e0_0 = e_out[0][(0 << x_out_num_vars) | x_out]; // e_out_0(0,0, x_out)
+            let e0_0 = e_out[0][x_out]; // e_out_0(0,0, x_out)
             let e0_1 = e_out[0][(1 << x_out_num_vars) | x_out]; // e_out_0(0,1, x_out)
             let e0_2 = e_out[0][(2 << x_out_num_vars) | x_out]; // e_out_0(1,0, x_out)
             let e0_3 = e_out[0][(3 << x_out_num_vars) | x_out]; // e_out_0(1,1, x_out)
             // e_out for round i = 1: y in {0,1}.
-            let e1_0 = e_out[1][(0 << x_out_num_vars) | x_out]; // e_out_1(0, x_out)
+            let e1_0 = e_out[1][x_out]; // e_out_1(0, x_out)
             let e1_1 = e_out[1][(1 << x_out_num_vars) | x_out]; // e_out_1(1, x_out)
             // e_out for round i = 2: there is no y.
-            let e_out_2 = e_out[2][x_out]; // e_out_2(x_out)
+            let e2 = e_out[2][x_out]; // e_out_2(x_out)
 
             // Now we do not use the idx4 function since we are directly computing the indices.
+            // We go through each beta = (v, u, y) in {0, 1}^3. We don't compute the cases where the digits are
+            // infinity because we won't need them.
+            // Recall that in `v || u` determines the accumulator's index, `y` determines the e_out facor, and the
+            // whole beta determines de temp_acc.
 
-            // beta_index = 0; beta = (0,0,0);
-            local_accumulators.accumulate(0, 0, e0_0 * temp_acc[0]); // y = 00, u = 0
-            local_accumulators.accumulate(1, 0, e1_0 * temp_acc[0]); // y = 0, v = 0, u = 0
-            local_accumulators.accumulate(2, 0, e_out_2 * temp_acc[0]); // v = 00, u = 0
+            // beta = (0,0,0)
+            local_accumulators.accumulate(0, 0, e0_0 * temp_acc[0]); // u = 0, y = 00
+            local_accumulators.accumulate(1, 0, e1_0 * temp_acc[0]); // v = 0, u = 0, y = 0, 
+            local_accumulators.accumulate(2, 0, e2 * temp_acc[0]); // v = 00, u = 0
 
-            // beta_index = 1; beta = (0,0,1);
-            local_accumulators.accumulate(0, 1, e0_1 * temp_acc[1]); // y = 00, u = 1
-            local_accumulators.accumulate(1, 1, e1_0 * temp_acc[1]); // y = 0, v = 0, u = 1
-            local_accumulators.accumulate(2, 1, e_out_2 * temp_acc[1]); // v = 00, u = 1
+            // beta = (0,0,1)
+            local_accumulators.accumulate(0, 0, e0_1 * temp_acc[1]); // u = 0, y = 01
+            local_accumulators.accumulate(1, 0, e1_1 * temp_acc[1]); //  v = 0, u = 0, y = 1
+            local_accumulators.accumulate(2, 1, e2 * temp_acc[1]); // v = 00, u = 1
 
-            // beta_index = 3; beta = (0,1,0);
-            local_accumulators.accumulate(0, 0, e0_1 * temp_acc[2]); // y = 01, u = 0
-            local_accumulators.accumulate(1, 2, e1_0 * temp_acc[2]); // y = 0, v = 1, u = 0
-            local_accumulators.accumulate(2, 2, e_out_2 * temp_acc[2]); // v = 01, u = 0
+            // beta = (0,1,0)
+            local_accumulators.accumulate(0, 0, e0_2 * temp_acc[2]); // u = 0, y = 10
+            local_accumulators.accumulate(1, 1, e1_0 * temp_acc[2]); // v = 0, u = 1, y = 0
+            local_accumulators.accumulate(2, 2, e2 * temp_acc[2]); // v = 01, u = 0
 
-            // beta_index = 4; beta = (0,1,1);
-            local_accumulators.accumulate(0, 0, e0_1 * temp_acc[3]); // y = 01, u = 1
-            local_accumulators.accumulate(1, 3, e1_0 * temp_acc[3]); // y = 0, v = 1, u = 1
-            local_accumulators.accumulate(2, 3, e_out_2 * temp_acc[3]); // v = 01, u = 1
+            // beta = (0,1,1)
+            local_accumulators.accumulate(0, 0, e0_3 * temp_acc[3]); // u = 0, y = 11
+            local_accumulators.accumulate(1, 1, e1_1 * temp_acc[3]); // v = 0, u = 1, y = 1
+            local_accumulators.accumulate(2, 3, e2 * temp_acc[3]); // v = 01, u = 1
 
-            // beta_index = 9; beta = (1,0,0);
-            local_accumulators.accumulate(0, 1, e0_2 * temp_acc[4]); // y = 10, u = 0
-            local_accumulators.accumulate(1, 0, e1_1 * temp_acc[4]); // y = 1, v = 0, u = 0
-            local_accumulators.accumulate(2, 4, e_out_2 * temp_acc[4]); // v = 10, u = 0
+            // beta = (1,0,0)
+            local_accumulators.accumulate(0, 1, e0_0 * temp_acc[4]); // u = 1, y = 00
+            local_accumulators.accumulate(1, 2, e1_0 * temp_acc[4]); // v = 1, u = 0, y = 0
+            local_accumulators.accumulate(2, 4, e2 * temp_acc[4]); // v = 10, u = 0
 
-            // beta_index = 10; beta =(1,0,1);
-            local_accumulators.accumulate(0, 1, e0_2 * temp_acc[5]); // y = 10, u = 1
-            local_accumulators.accumulate(1, 1, e1_1 * temp_acc[5]); // y = 1, v = 0, u = 1
-            local_accumulators.accumulate(2, 5, e_out_2 * temp_acc[5]); // v = 10, u = 1
+            // beta = (1,0,1)
+            local_accumulators.accumulate(0, 1, e0_1 * temp_acc[5]); // u = 1, y = 01
+            local_accumulators.accumulate(1, 2, e1_1 * temp_acc[5]); // v = 1, u = 0, y = 1
+            local_accumulators.accumulate(2, 5, e2 * temp_acc[5]); // v = 10, u = 1
 
-            // beta_index = 12; beta = (1,1,0);
-            local_accumulators.accumulate(0, 1, e0_3 * temp_acc[6]); // y = 11, u = 0
-            local_accumulators.accumulate(1, 2, e1_1 * temp_acc[6]); // y = 1, v = 1, u = 0
-            local_accumulators.accumulate(2, 6, e_out_2 * temp_acc[6]); // v = 11, u = 0
+            // beta = (1,1,0)
+            local_accumulators.accumulate(0, 1, e0_2 * temp_acc[6]); // u = 1, y = 10
+            local_accumulators.accumulate(1, 3, e1_0 * temp_acc[6]); // v = 1, u = 1, y = 0
+            local_accumulators.accumulate(2, 6, e2 * temp_acc[6]); // v = 11, u = 0
 
-            // beta_index = 13; beta = (1,1,1);
-            local_accumulators.accumulate(0, 1, e0_3 * temp_acc[7]); // y = 11, u = 1
-            local_accumulators.accumulate(1, 3, e1_1 * temp_acc[7]); // y = 1, v = 1, u = 1
-            local_accumulators.accumulate(2, 7, e_out_2 * temp_acc[7]); // v = 11, u = 1
+            // beta = (1,1,1)
+            local_accumulators.accumulate(0, 1, e0_3 * temp_acc[7]); // u = 1, y = 11
+            local_accumulators.accumulate(1, 3, e1_1 * temp_acc[7]); // v = 1, u = 1, y = 1
+            local_accumulators.accumulate(2, 7, e2 * temp_acc[7]); // v = 11, u = 1
 
             local_accumulators
         })
@@ -459,7 +432,6 @@ where
 
     // We compute all the accumulators A_i(v, u).
     let accumulators = compute_accumulators_eq(poly, e_in, e_out);
-    println!("Accumulators: {:?}", accumulators);
 
     // ------------------   Round 1   ------------------
 
@@ -551,15 +523,15 @@ where
 
     let mut t_3_evals = [EF::ZERO; 2];
 
-    t_3_evals[0] += lagrange_evals_r_2[0] * accumulators_round_3[0]; // (0,0,u=0)
-    t_3_evals[0] += lagrange_evals_r_2[1] * accumulators_round_3[4]; // (1,0,u=0)
-    t_3_evals[0] += lagrange_evals_r_2[2] * accumulators_round_3[2]; // (0,1,u=0)
-    t_3_evals[0] += lagrange_evals_r_2[3] * accumulators_round_3[6]; // (1,1,u=0)
+    t_3_evals[0] += lagrange_evals_r_2[0] * accumulators_round_3[0]; // (v=00 u=0)
+    t_3_evals[0] += lagrange_evals_r_2[1] * accumulators_round_3[2]; // (10 0)
+    t_3_evals[0] += lagrange_evals_r_2[2] * accumulators_round_3[4]; // (01 0)
+    t_3_evals[0] += lagrange_evals_r_2[3] * accumulators_round_3[6]; // (11 0)
 
-    t_3_evals[1] += lagrange_evals_r_2[0] * accumulators_round_3[1]; // (0,0,u=1)
-    t_3_evals[1] += lagrange_evals_r_2[1] * accumulators_round_3[5]; // (1,0,u=1)
-    t_3_evals[1] += lagrange_evals_r_2[2] * accumulators_round_3[3]; // (0,1,u=1)
-    t_3_evals[1] += lagrange_evals_r_2[3] * accumulators_round_3[7]; // (1,1,u=1)
+    t_3_evals[1] += lagrange_evals_r_2[0] * accumulators_round_3[1]; // (00 1)
+    t_3_evals[1] += lagrange_evals_r_2[1] * accumulators_round_3[3]; // (01 1)
+    t_3_evals[1] += lagrange_evals_r_2[2] * accumulators_round_3[5]; // (10 1)
+    t_3_evals[1] += lagrange_evals_r_2[3] * accumulators_round_3[7]; // (11 1)
 
     // 2. For u in {0, 1, inf} compute S_3(u) = t_3(u) * l_3(u).
 

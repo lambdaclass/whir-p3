@@ -505,24 +505,6 @@ fn run_sumcheck_test_svo(folding_factors: &[usize], num_points: &[usize]) {
     assert_eq!(sum, final_folded_value_transcript * eq_eval);
 }
 
-#[test]
-fn test_sumcheck_svo() {
-    // It doesn't work with folding factor smaller than 6:
-    // run_sumcheck_test_svo(&[5, 0], &[1]);
-
-    run_sumcheck_test_svo(&[6, 0], &[1]);
-    run_sumcheck_test_svo(&[7, 0], &[1]);
-    run_sumcheck_test_svo(&[8, 0], &[1]);
-
-    // It doesn't work with more than one folding factor (that is, more than one iteration of sumcheck:
-    //run_sumcheck_test_svo(&[6, 6], &[1]);
-    //run_sumcheck_test_svo(&[6, 1], &[1]);
-    //run_sumcheck_test_svo(&[7, 7, 7], &[1, 1]);
-
-    // It doesn't work with num_points > 1:
-    //run_sumcheck_test_svo(&[6, 0], &[5]);
-}
-
 fn run_sumcheck_test(folding_factors: &[usize], num_points: &[usize]) {
     // The number of folding stages must match the number of point constraints plus final round.
     assert_eq!(folding_factors.len(), num_points.len() + 1);
@@ -905,6 +887,24 @@ fn test_sumcheck_prover() {
     run_sumcheck_test_skips(&[6, 0], &[4]);
     run_sumcheck_test_skips(&[8, 2], &[3]);
     run_sumcheck_test_skips(&[6, 2, 2], &[3, 3]);
+}
+// TODO: Check what can be tested
+#[test]
+fn test_sumcheck_prover_svo() {
+    // It doesn't work with folding factor smaller than 6:
+    // run_sumcheck_test_svo(&[5, 0], &[1]);
+
+    run_sumcheck_test_svo(&[6, 0], &[1]);
+    run_sumcheck_test_svo(&[7, 0], &[1]);
+    run_sumcheck_test_svo(&[8, 0], &[1]);
+
+    // It doesn't work with more than one folding factor (that is, more than one iteration of sumcheck:
+    //run_sumcheck_test_svo(&[6, 6], &[1]);
+    //run_sumcheck_test_svo(&[6, 1], &[1]);
+    //run_sumcheck_test_svo(&[7, 7, 7], &[1, 1]);
+
+    // It doesn't work with num_points > 1:
+    //run_sumcheck_test_svo(&[6, 0], &[5]);
 }
 
 proptest! {

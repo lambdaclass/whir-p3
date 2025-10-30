@@ -3,7 +3,7 @@ use crate::{
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::{
         sumcheck_single::SumcheckSingle,
-        sumcheck_small_value_eq::{
+        sumcheck_small_value::{
             NUM_SVO_ROUNDS, run_final_round_algo5, run_transition_round_algo2,
             small_value_sumcheck_three_rounds_eq,
         },
@@ -39,7 +39,7 @@ where
 
         let (weights_init, mut sum) = statement.combine::<F>(combination_randomness);
 
-        // We assume the the statement has only one constraint.
+        // We assume the statement has only one constraint.
         let w = statement.constraints[0].point.0.clone();
 
         // First three rounds of sumcheck.

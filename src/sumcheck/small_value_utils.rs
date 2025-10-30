@@ -51,6 +51,7 @@ where
     }
 }
 
+// This is used to add the accumulators of two Accumulators structs inside the compute_accumulators_eq function.
 impl<F: Field> Add for Accumulators<F> {
     type Output = Self;
 
@@ -67,17 +68,17 @@ impl<F: Field> Add for Accumulators<F> {
 
 // For round i, RoundAccumulators has all the accumulators of the form A_i(u, v).
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct RoundAccumlators<F: Field> {
+pub struct RoundAccumulators<F: Field> {
     pub round: usize,
     pub accumulators: Vec<F>,
 }
 
-impl<F> RoundAccumlators<F>
+impl<F> RoundAccumulators<F>
 where
     F: Field,
 {
     pub fn new(round: usize, accumulators: Vec<F>) -> Self {
-        RoundAccumlators {
+        RoundAccumulators {
             round,
             accumulators,
         }
@@ -87,19 +88,19 @@ where
     pub fn new_empty(round: usize) -> Self {
         match round {
             // In the round 1, there are 3 accumulators: A_1(0), A_1(1) and A_1(inf).
-            1 => RoundAccumlators {
+            1 => RoundAccumulators {
                 round,
                 accumulators: vec![F::ZERO; 3],
             },
             // In round 2, there are 3 * 3 = 9 accumulators,
             // since v in {0, 1, inf} and u in {0, 1, inf}.
-            2 => RoundAccumlators {
+            2 => RoundAccumulators {
                 round,
                 accumulators: vec![F::ZERO; 9],
             },
             // In round 3, there are 3^2 * 3 = 27 accumulators,
             // since v in {0, 1, inf}^2 and u in {0, 1, inf}.
-            3 => RoundAccumlators {
+            3 => RoundAccumulators {
                 round,
                 accumulators: vec![F::ZERO; 27],
             },
@@ -112,7 +113,9 @@ where
     }
 }
 
-// We asseume n in {0, ..., 26}
+// TODO: This function is not used anywhere. Leave it as a reference for the future.
+// We don't use  because we compute the accumulators in a different way.
+// We assume n in {0, ..., 26}
 pub fn to_base_three_coeff(n: usize) -> [usize; 3] {
     let mut n = n;
     let mut coeffs = [0; 3];
@@ -122,7 +125,8 @@ pub fn to_base_three_coeff(n: usize) -> [usize; 3] {
     }
     coeffs
 }
-
+// TODO: This function is not used anywhere. Leave it as a reference for the future.
+// We don't use  because we compute the accumulators in a different way.
 pub fn idx4(index_beta: usize) -> [Option<usize>; 3] {
     let [b1, b2, b3] = to_base_three_coeff(index_beta);
 
@@ -132,7 +136,8 @@ pub fn idx4(index_beta: usize) -> [Option<usize>; 3] {
         _ => [Some(b1), Some(b1 * 3 + b2), Some(b1 * 9 + b2 * 3 + b3)],
     }
 }
-
+// TODO: This function is not used anywhere. Leave it as a reference for the future.
+// We don't use because we compute the accumulators in a different way.
 pub fn idx4_v2(index_beta: usize) -> [Option<usize>; 3] {
     let [b1, b2, b3] = to_base_three_coeff(index_beta);
 
@@ -143,10 +148,9 @@ pub fn idx4_v2(index_beta: usize) -> [Option<usize>; 3] {
 }
 
 // Implement Procedure 6 (Page 34).
-// Fijado x'' en {0, 1}^{l-3}, dadas las evaluaciones del multilineal q(x1, x2, x3) = p(x1, x2, x3, x'') en el booleano devuelve las
-// evaluaciones de q en beta para todo beta in {0, 1, inf}^3.
+// Fixed x'' in {0, 1}^{l-3}, given the evaluations of the multilinear q(x1, x2, x3) = p(x1, x2, x3, x'') in the boolean hypercube, returns the
+// evaluations of q in beta for all beta in {0, 1, inf}^3.
 pub fn compute_p_beta<F: Field>(current_evals: &[F; 8], next_evals: &mut [F; 27]) {
-
     next_evals[0] = current_evals[0]; // 000
     next_evals[1] = current_evals[1]; // 001
     next_evals[3] = current_evals[2]; // 010

@@ -658,7 +658,7 @@ pub fn algorithm_5<Challenger, F: Field, EF: ExtensionField<F>>(
 
 use rayon::prelude::*;
 
-// Algorithm 5 Optimizado - Page 18.
+// Algorithm 5 Optimizado. Page 18.
 pub fn algorithm_5_v2<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     poly: &mut EvaluationsList<EF>,

@@ -242,6 +242,7 @@ fn compute_accumulators<F: Field, EF: ExtensionField<F>>(
         .reduce(|| Accumulators::<EF>::new_empty(), |a, b| a + b)
 }
 
+// TODO: Ver si se puede cambiar vec por slice.
 pub fn eval_eq_in_hypercube<F: Field>(point: &Vec<F>) -> Vec<F> {
     let n = point.len();
     let mut evals = F::zero_vec(1 << n);
@@ -442,32 +443,33 @@ where
 /// to the provided challenges `r_1, ..., r_{k}`. The result is a new evaluation table
 /// representing p(r_1, ..., r_{k}, x'). This is the core mechanic for the transition.
 
-fn fold_evals_with_challenges<Base, Target>(
-    evals: &EvaluationsList<Base>,
-    challenges: &[Target],
-) -> EvaluationsList<Target>
+pub fn fold_evals_with_challenges<F, EF>(
+    evals: &EvaluationsList<F>,
+    challenges: &[EF],
+) -> EvaluationsList<EF>
 where
-    Base: Field,
-    Target: Field + core::ops::Mul<Base, Output = Target>,
+    F: Field,
+    EF: ExtensionField<F>,
 {
     let num_challenges = challenges.len();
     let remaining_vars = evals.num_variables() - num_challenges;
     let num_remaining_evals = 1 << remaining_vars;
 
-    let eq_table: Vec<Target> = {
-        let mut table = vec![Target::ZERO; 1 << num_challenges];
-        eval_eq::<_, _, false>(challenges, &mut table, Target::ONE);
-        table
-    };
+    let eq_evals: Vec<EF> = eval_eq_in_hypercube(&challenges.to_vec());
+    // let eq_evals: Vec<EF> = {
+    //     let mut evals = vec![EF::ZERO; 1 << num_challenges];
+    //     eval_eq::<_, _, false>(challenges, &mut evals, EF::ONE);
+    //     evals
+    // };
 
-    let folded_evals_flat: Vec<Target> = (0..num_remaining_evals)
+    let folded_evals_flat: Vec<EF> = (0..num_remaining_evals)
         .into_par_iter()
         .map(|i| {
             // Use the multilinear extension formula: p(r, x') = Σ_{b} eq(r, b) * p(b, x')
-            eq_table
+            eq_evals
                 .iter()
                 .enumerate()
-                .fold(Target::ZERO, |acc, (j, &eq_val)| {
+                .fold(EF::ZERO, |acc, (j, &eq_val)| {
                     let original_eval_index = (j * num_remaining_evals) + i;
                     let p_b_x = evals.as_slice()[original_eval_index];
                     acc + eq_val * p_b_x

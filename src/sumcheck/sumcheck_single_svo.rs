@@ -3,10 +3,8 @@ use crate::{
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::{
         small_value_utils::NUM_SVO_ROUNDS,
-        sumcheck_single::SumcheckSingle,
-        sumcheck_small_value::{
-            run_final_round_algo5, run_transition_round_algo2, small_value_sumcheck_three_rounds_eq,
-        },
+        sumcheck_single::{SumcheckSingle, round},
+        sumcheck_small_value::{fold_evals_with_challenges, small_value_sumcheck_three_rounds_eq},
     },
     whir::statement::Statement,
 };
@@ -51,20 +49,22 @@ where
 
         // Transition Round: l_0 + 1
 
-        let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
-            prover_state,
-            evals,
-            &weights_init,
-            &challenges,
-            &mut sum,
-            pow_bits,
-        );
-        challenges.push(r_transition);
+        // let (r_transition, mut folded_evals, mut folded_weights) = run_transition_round_algo2(
+        //     prover_state,
+        //     evals,
+        //     &weights_init,
+        //     &challenges,
+        //     &mut sum,
+        //     pow_bits,
+        // );
+
+        let mut folded_evals = fold_evals_with_challenges(evals, &challenges);
+        let mut folded_weights = fold_evals_with_challenges(&weights_init, &challenges);
 
         // Final Rounds: l_0 + 2 to l
 
-        for _ in (NUM_SVO_ROUNDS + 1)..folding_factor {
-            let r_final = run_final_round_algo5(
+        for _ in NUM_SVO_ROUNDS..folding_factor {
+            let r_final = round(
                 prover_state,
                 &mut folded_evals,
                 &mut folded_weights,

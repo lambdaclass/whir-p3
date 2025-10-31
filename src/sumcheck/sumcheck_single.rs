@@ -80,7 +80,7 @@ where
 ///
 /// ## Returns
 /// The verifier's challenge `r` as an `EF` element.
-fn round<Challenger, F: Field, EF: ExtensionField<F>>(
+pub fn round<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     evals: &mut EvaluationsList<EF>,
     weights: &mut EvaluationsList<EF>,

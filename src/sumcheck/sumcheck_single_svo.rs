@@ -2,10 +2,10 @@ use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::{
+        small_value_utils::NUM_SVO_ROUNDS,
         sumcheck_single::SumcheckSingle,
         sumcheck_small_value::{
-            NUM_SVO_ROUNDS, run_final_round_algo5, run_transition_round_algo2,
-            small_value_sumcheck_three_rounds_eq,
+            run_final_round_algo5, run_transition_round_algo2, small_value_sumcheck_three_rounds_eq,
         },
     },
     whir::statement::Statement,

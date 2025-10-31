@@ -1,7 +1,8 @@
 use p3_field::Field;
 use std::ops::Add;
 
-pub const NUM_OF_ROUNDS: usize = 3;
+/// Number of Small Value Optimization (SVO) rounds.
+pub const NUM_SVO_ROUNDS: usize = 3;
 
 #[derive(Debug, Clone, Eq, PartialEq, Copy)]
 pub enum EvaluationPoint {
@@ -56,8 +57,7 @@ impl<F: Field> Add for Accumulators<F> {
     type Output = Self;
 
     fn add(mut self, other: Self) -> Self {
-        for i in 0..NUM_OF_ROUNDS {
-            // NUM_OF_ROUNDS is 3
+        for i in 0..NUM_SVO_ROUNDS {
             for j in 0..self.accumulators[i].len() {
                 self.accumulators[i][j] += other.accumulators[i][j];
             }
@@ -119,7 +119,7 @@ where
 pub fn to_base_three_coeff(n: usize) -> [usize; 3] {
     let mut n = n;
     let mut coeffs = [0; 3];
-    for i in (0..NUM_OF_ROUNDS).rev() {
+    for i in (0..NUM_SVO_ROUNDS).rev() {
         coeffs[i] = n % 3;
         n /= 3;
     }

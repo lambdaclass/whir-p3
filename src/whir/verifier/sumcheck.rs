@@ -10,7 +10,7 @@ use crate::{
         verifier::VerifierState,
     },
     poly::multilinear::MultilinearPoint,
-    sumcheck::{sumcheck_polynomial::SumcheckPolynomial, sumcheck_small_value::NUM_SVO_ROUNDS},
+    sumcheck::{small_value_utils::NUM_SVO_ROUNDS, sumcheck_polynomial::SumcheckPolynomial},
 };
 
 /// The full vector of folding randomness values, in reverse round order.

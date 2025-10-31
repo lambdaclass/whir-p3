@@ -7,31 +7,25 @@ use crate::{
     fiat_shamir::prover::ProverState,
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
     sumcheck::{
-        small_value_utils::{Accumulators, compute_p_beta},
+        small_value_utils::{Accumulators, NUM_SVO_ROUNDS, compute_p_beta},
         sumcheck_single::compute_sumcheck_polynomial,
     },
 };
 
-/// Number of Small Value Optimization (SVO) rounds.
-///
-/// This implementation assumes we perform 3 rounds using the small value optimization.
-pub(crate) const NUM_SVO_ROUNDS: usize = 3;
-const NUM_OF_ROUNDS: usize = NUM_SVO_ROUNDS;
-
 fn precompute_e_in<F: Field>(w: &MultilinearPoint<F>) -> Vec<F> {
     let half_l = w.num_variables() / 2;
-    let w_in = w.0[NUM_OF_ROUNDS..NUM_OF_ROUNDS + half_l].to_vec();
+    let w_in = w.0[NUM_SVO_ROUNDS..NUM_SVO_ROUNDS + half_l].to_vec();
     eval_eq_in_hypercube(&w_in)
 }
 
-fn precompute_e_out<F: Field>(w: &MultilinearPoint<F>) -> [Vec<F>; NUM_OF_ROUNDS] {
+fn precompute_e_out<F: Field>(w: &MultilinearPoint<F>) -> [Vec<F>; NUM_SVO_ROUNDS] {
     let half_l = w.num_variables() / 2;
     let w_out_len = w.num_variables() - half_l - 1;
 
     std::array::from_fn(|round| {
         let mut w_out = Vec::with_capacity(w_out_len);
-        w_out.extend_from_slice(&w.0[round + 1..NUM_OF_ROUNDS]);
-        w_out.extend_from_slice(&w.0[half_l + NUM_OF_ROUNDS..]);
+        w_out.extend_from_slice(&w.0[round + 1..NUM_SVO_ROUNDS]);
+        w_out.extend_from_slice(&w.0[half_l + NUM_SVO_ROUNDS..]);
         eval_eq_in_hypercube(&w_out)
     })
 }
@@ -46,7 +40,7 @@ fn transpose_poly_for_svo<F: Field>(
 ) -> Vec<F> {
     let num_x_in = 1 << half_l;
     let _num_x_out = 1 << x_out_num_vars;
-    let step_size = 1 << (num_variables - NUM_OF_ROUNDS);
+    let step_size = 1 << (num_variables - NUM_SVO_ROUNDS);
     let block_size = 8;
 
     // Pre-allocate the full memory for the transposed data.
@@ -78,13 +72,13 @@ fn transpose_poly_for_svo<F: Field>(
 fn compute_accumulators<F: Field, EF: ExtensionField<F>>(
     poly: &EvaluationsList<F>,
     e_in: Vec<EF>,
-    e_out: [Vec<EF>; NUM_OF_ROUNDS],
+    e_out: [Vec<EF>; NUM_SVO_ROUNDS],
 ) -> Accumulators<EF> {
     let l = poly.num_variables();
     let half_l = l / 2;
 
-    let x_out_num_variables = half_l - NUM_OF_ROUNDS + (l % 2);
-    debug_assert_eq!(half_l + x_out_num_variables, l - NUM_OF_ROUNDS);
+    let x_out_num_variables = half_l - NUM_SVO_ROUNDS + (l % 2);
+    debug_assert_eq!(half_l + x_out_num_variables, l - NUM_SVO_ROUNDS);
 
     // Transpose once so the parallel loop reads contiguous blocks.
     let transposed_poly = transpose_poly_for_svo(poly, l, x_out_num_variables, half_l);
@@ -289,6 +283,21 @@ fn get_evals_from_l_and_t<F: Field>(l: &[F; 2], t: &[F]) -> [F; 2] {
 // Compute three sumcheck rounds using the small value optimizaition and split-eq accumulators.
 // It Returns the three challenges r_1, r_2, r_3
 // (TODO: I think it should return also the folded polynomials). [OLD comment]
+
+// Option 2
+
+// This function implements steps 1-4 of the Algorithm 6 (page 19).
+///
+// 1.  Pre-computes accumulators `A_i(v, u)` (using Proc. 9).
+// 2.  For each round `i` from 1 to 3:
+//     a.  Calculates the polynomial `t_i(u)` (degree d) using accumulators
+//         and Lagrange evals of previous challenges (Eq. 17).
+//     b.  Calculates the linear polynomial `l_i(u) = eq(w_i, u) * ...`.
+//     c.  Calculates `s_i(u) = t_i(u) * l_i(u)` (Proc. 8).
+//     d.  Sends `s_i(0)` and `s_i(inf)` to the `prover_state`.
+//     e.  Receives a new challenge `r_i`.
+//     f.  Updates the `sum` for the next round based on `s_i(r_i)`.
+// Returns the tuple of challenges `(r_1, r_2, r_3)` needed for the transition round.
 pub fn small_value_sumcheck_three_rounds_eq<Challenger, F: Field, EF: ExtensionField<F>>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     poly: &EvaluationsList<F>,
@@ -471,6 +480,19 @@ where
 
 /// TRANSITION ROUND (l_0 + 1):
 /// Executes a single round to transition from the SVO phase to the final phase.
+
+// Option 2
+
+/// Implements the "Transition Round" (round `l₀ + 1`) of Algorithm 6 (page 19).
+///
+/// This round serves as a bridge:
+// 1.  It folds the `evals` and `weights` tables (which are in the base field `F`)
+//     using the challenges `(r_1, r_2, r_3)` from the SVO phase. This step
+//     lifts the evaluations into the extension field `EF`.
+// 2.  It then performs one standard sumcheck round
+//     on these new, smaller, extension-field tables.
+// 3.  It samples the transition challenge `r_{l_0+1}`.
+
 pub(crate) fn run_transition_round_algo2<Challenger, F, EF>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     evals_base: &EvaluationsList<F>,
@@ -511,7 +533,12 @@ where
 /// FINAL ROUNDS (l_0 + 2 to l): Explicit implementation of Algorithm 5's logic.
 ///
 /// Executes a standard sumcheck round on tables that have already been folded.
+
+// Option 2
+/// Implements the "Final Rounds" (rounds `l₀ + 2` to `l`) of Algorithm 6 (page 19).
 ///
+// These are standard sumcheck rounds, identical to Algorithm 1 or 5.
+// They operate on the already-folded, extension-field evaluation tables.
 pub(crate) fn run_final_round_algo5<Challenger, F, EF>(
     prover_state: &mut ProverState<F, EF, Challenger>,
     folded_evals: &mut EvaluationsList<EF>,
@@ -630,7 +657,7 @@ mod tests {
 
         let e_in = precompute_e_in(&w);
 
-        let w_in = w.0[NUM_OF_ROUNDS..NUM_OF_ROUNDS + 5].to_vec();
+        let w_in = w.0[NUM_SVO_ROUNDS..NUM_SVO_ROUNDS + 5].to_vec();
 
         assert_eq!(
             w_in,

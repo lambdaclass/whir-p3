@@ -220,6 +220,32 @@ where
         }
     }
 
+    #[inline]
+    pub fn compress_svo(&mut self, r: F) {
+        assert_ne!(self.num_variables(), 0);
+
+        // For large inputs, we use a parallel, out-of-place strategy.
+        if self.num_evals() >= PARALLEL_THRESHOLD {
+            let mid = self.num_evals() / 2;
+            let (left, right) = self.0.split_at(mid);
+            let folded = left
+                .par_iter()
+                .zip(right.par_iter())
+                .map(|(&p0, &p1)| r * (p1 - p0) + p0)
+                .collect();
+            self.0 = folded;
+        } else {
+            // For smaller inputs, we use a sequential, in-place strategy.
+            let mid = self.num_evals() / 2;
+            for i in 0..mid {
+                let p0 = self.0[i];
+                let p1 = self.0[mid + i];
+                self.0[i] = r * (p1 - p0) + p0;
+            }
+            self.0.truncate(mid);
+        }
+    }
+
     /// Folds a list of evaluations from a base field `F` into an extension field `EF`.
     ///
     /// ## Arguments

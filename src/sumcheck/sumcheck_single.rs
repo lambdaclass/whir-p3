@@ -47,6 +47,7 @@ where
 {
     // Compute the quadratic sumcheck polynomial for the current variable.
     let sumcheck_poly = compute_sumcheck_polynomial(evals, weights, *sum);
+
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[0]);
     prover_state.add_extension_scalar(sumcheck_poly.evaluations()[2]);
 
@@ -224,6 +225,14 @@ where
     F: Field + Ord,
     EF: ExtensionField<F>,
 {
+    pub fn new(evals: EvaluationsList<EF>, weights: EvaluationsList<EF>, sum: EF) -> Self {
+        Self {
+            evals,
+            weights,
+            sum,
+            phantom: std::marker::PhantomData,
+        }
+    }
     /// Constructs a new `SumcheckSingle` instance from evaluations in the extension field.
     ///
     /// This function:
